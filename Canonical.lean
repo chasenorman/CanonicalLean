@@ -54,17 +54,20 @@ structure CanonicalResult where
   branching: Float32
 deriving Inhabited
 
-@[extern "term_to_string"] opaque termToString: @& Tm → String
+@[never_extract, extern "term_to_string"] opaque termToString: @& Tm → String
 instance : ToString Tm where toString := termToString
 
-@[extern "typ_to_string"] opaque typToString: @& Typ → String
+@[never_extract, extern "typ_to_string"] opaque typToString: @& Typ → String
 instance : ToString Typ where toString := typToString
 
 /-- Generate terms of a given type, with given timeout, desired count, `synth` and `debug` flags -/
-@[extern "canonical"] opaque canonical : @& Typ → UInt64 → USize → Bool → Bool → CanonicalResult
+@[never_extract, extern "canonical"] opaque canonical : @& Typ → UInt64 → USize → Bool → Bool → IO CanonicalResult
 
 /-- Start a server with the refinement UI on the given type. -/
-@[extern "refine"] opaque refine : @& Typ → Bool → Bool
+@[never_extract, extern "refine"] opaque refine : @& Typ → Bool → IO Unit
+
+/-- Obtains the current term from the refinement UI. -/
+@[never_extract, extern "get_refinement"] opaque getRefinement : IO Tm
 
 /-- Some Lean Π-types cannot be converted into Canonical Π-types,
     and are instead converted into this structure. -/
@@ -97,6 +100,11 @@ structure Definition where
   irrelevant: Bool := false
   value: Value := Value.opaque
   shouldReplace: Bool := false
+
+/- def print_force (s : String) : IO Unit := do
+  let handle ← IO.FS.Handle.mk "output.txt" IO.FS.Mode.append
+  handle.putStrLn s
+  handle.flush -/
 
 /-- When translating to Canonical, we maintain a state of translated constant symbols. -/
 abbrev ToCanonicalM := StateT (AssocList Name Definition) MetaM
@@ -434,8 +442,11 @@ mutual
           | some n => pure (mkRawNatLit n)
           | none =>
             let constName := term.head.toName
-            let decl := (Option.get! $ (← getEnv).find? constName)
-            toApp decl.type (mkConst constName (←mvarLevels decl.numLevelParams)) term.args.toList 0 []
+            match (← getEnv).find? constName with
+            | none =>
+              let name := ((term.head.dropWhile (fun x => x != '?')).drop 1).takeWhile (fun x => x.isAlphanum)
+              mkFreshExprMVar (some (mkAppN type typeArgs.toArray)) (userName := name.toName)
+            | some decl => toApp decl.type (mkConst constName (←mvarLevels decl.numLevelParams)) term.args.toList 0 []
         | some fvarId => toApp ((← MonadLCtx.getLCtx).get! fvarId).type (mkFVar fvarId) term.args.toList 0 []
 
   /-- Builds an application of type `type` following the `args` -/
@@ -502,7 +513,7 @@ structure CanonicalConfig where
   /-- Provides `(A → B) : Sort` as an axiom to Canonical. -/
   pi: Bool := false
   debug: Bool := false
-  /-- Opens the refinement UI (beta). -/
+  /-- Opens the refinement UI. -/
   refine: Bool := false
 
 declare_config_elab canonicalConfig CanonicalConfig
@@ -512,33 +523,58 @@ def checkInterrupted : CoreM Bool := do
   if let some tk := (← read).cancelTk? then pure (← tk.isSet)
   else pure false
 
--- def print_force (s : String) : IO Unit := do
---   let handle ← IO.FS.Handle.mk "output.txt" IO.FS.Mode.append
---   handle.putStrLn s
---   handle.flush
-
--- WN: I'm not sure this makes a difference
-def canonicalIO (type : @& Typ) (timeout : UInt64) (count : USize) (synth : Bool) (debug: Bool) : IO CanonicalResult :=
-  do pure (canonical type timeout count synth debug)
-
 end Canonical
 
 open Canonical
 open Lean Elab Meta Tactic
 
+def applyOptions : Options → Options :=
+  (pp.proofs.set · true |>
+  (pp.motives.all.set · true |>
+  (pp.coercions.set · false |>
+  (pp.unicode.fun.set · true))))
+
+structure RpcData where
+  goal: Expr
+  lctx: LocalContext
+  width: Nat
+  indent: Nat
+  column: Nat
+deriving TypeName
+
+structure InsertParams where
+  rpcData : Server.WithRpcRef RpcData
+  /-- Position of our widget instance in the Lean file. -/
+  pos : Lsp.Position
+  range: Lsp.Range
+deriving Server.RpcEncodable
+
+open Server RequestM in
+/-- Gets the String to be inserted into the document, for the refinement widget. -/
+@[server_rpc_method]
+def getRefinementStr (params : InsertParams) : RequestM (RequestTask String) :=
+  withWaitFindSnapAtPos params.pos fun snap => do
+    runTermElabM snap do
+      let data := params.rpcData.val
+      let lctx := data.lctx
+
+      withLCtx' lctx do
+        let map ← lctx.foldlM (fun map decl => do
+          if Lean.LocalDecl.isAuxDecl decl then pure map else pure (map.insert (← nameString (mkFVar decl.fvarId)) decl.fvarId)) {}
+
+        MonadWithOptions.withOptions applyOptions do
+          let expr := dePi (← (toLam data.goal (← getRefinement) [] 0).run' map)
+          let tm ← Lean.Meta.Tactic.TryThis.delabToRefinableSyntax expr
+          let stx ← `(tactic| refine $tm)
+          let fmt ← Lean.PrettyPrinter.ppCategory `tactic stx
+          let str := Std.Format.pretty fmt data.width data.indent data.column
+          pure str
+
 /-- The widget for the refinement UI. -/
 @[widget_module]
 def refineWidget : Widget.Module where
-  javascript := "
-    import * as React from 'react';
-    export default function(props) {
-      return React.createElement('iframe', {
-        src: 'http://localhost:3000',
-        width: '100%',
-        height: '500px',
-        style: { border: 'none' }
-      });
-    }"
+  javascript := include_str "refine.js"
+
 
 syntax canonicalRuleSeq := " [" withoutPosition(term,*,?) "]"
 /-- Canonical exhaustively searches for terms in dependent type theory. -/
@@ -558,11 +594,22 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
     let goal ← getMainTarget
     let type ← toCanonical goal argList config.pi |>.run' default
 
+    let lctx ← MonadLCtx.getLCtx
+    let map ← lctx.foldlM (fun map decl => do
+      if Lean.LocalDecl.isAuxDecl decl then pure map else pure (map.insert (← nameString (mkFVar decl.fvarId)) decl.fvarId)) {}
+
     if config.refine then
-      let b := refine type config.synth
+      let _ ← refine type config.synth
       Elab.admitGoal (← getMainGoal)
-      Lean.Widget.savePanelWidgetInfo (hash refineWidget.javascript) (← getRef) (props := return json% {})
-      dbg_trace b
+      let fileMap ← getFileMap
+      let strRange := (← getRef).getRange?.get!
+      let range := fileMap.utf8RangeToLspRange strRange
+      let width := Lean.Meta.Tactic.TryThis.getInputWidth (← getOptions)
+      let (indent, column) := Lean.Meta.Tactic.TryThis.getIndentAndColumn fileMap strRange
+      Lean.Widget.savePanelWidgetInfo (hash refineWidget.javascript) (← getRef)
+        (props := do
+          let rpcData ← Server.RpcEncodable.rpcEncode (Server.WithRpcRef.mk (RpcData.mk goal lctx width indent column))
+          pure (Json.mkObj [("rpcData", rpcData), ("range", ToJson.toJson range)]))
       return
 
     let timeout := match timeout_syntax with
@@ -572,7 +619,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
       dbg_trace type
     Core.checkInterrupted
     let task ← IO.asTask (prio := Task.Priority.dedicated)
-      (canonicalIO type (UInt64.ofNat timeout) config.count config.synth config.debug)
+      (canonical type (UInt64.ofNat timeout) config.count config.synth config.debug)
     while !(← IO.hasFinished task) do
       if ← checkInterrupted then
         IO.cancel task
@@ -580,12 +627,11 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
       IO.sleep 10
 
     let result ← IO.ofExcept task.get
+
     let proofs ← result.terms.mapM fun term => do
-      let map ← (← MonadLCtx.getLCtx).foldlM (fun map decl => do
-        if Lean.LocalDecl.isAuxDecl decl then pure map else pure (map.insert (← nameString (mkFVar decl.fvarId)) decl.fvarId)) {}
       pure (dePi (← (toLam goal term [] 0).run' map))
 
-    MonadWithOptions.withOptions (fun opts => (((opts.set `pp.proofs true).set `pp.motives.all true).set `pp.coercions false).set `pp.unicode.fun true) do
+    MonadWithOptions.withOptions applyOptions do
       if proofs.isEmpty then
         match timeout_syntax with
         | some _ => throwError "No proof found."
