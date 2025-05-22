@@ -633,9 +633,12 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
 
     MonadWithOptions.withOptions applyOptions do
       if proofs.isEmpty then
-        match timeout_syntax with
-        | some _ => throwError "No proof found."
-        | none => throwError "No proof found. Change timeout to `n` with `canonical n`"
+        match s with
+        | some _ =>
+          match timeout_syntax with
+          | some _ => throwError "No proof found."
+          | none => throwError "No proof found. Change timeout to `n` with `canonical n`"
+        | none => throwError "No proof found. Supply constant symbols with `canonical [name, ...]`"
       else
         Elab.admitGoal (← getMainGoal)
         if h : proofs.size = 1 then
