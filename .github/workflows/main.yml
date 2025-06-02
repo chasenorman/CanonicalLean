@@ -32,6 +32,7 @@ jobs:
       - uses: leanprover/lean-action@v1
         with:
           check-reservoir-eligibility: true
+          use-github-cache: false
 
       - name: Add Lean to PATH (Windows)
         if: runner.os == 'Windows'
