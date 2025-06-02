@@ -2,7 +2,6 @@ import * as React from 'react';
 import { useRpcSession, EditorContext, EnvPosContext } from '@leanprover/infoview';
 export default function(props) {
     const pos = React.useContext(EnvPosContext)
-    console.log(JSON.stringify(props));
     const iframeRef = React.useRef(null);
     const editorConnection = React.useContext(EditorContext);
 

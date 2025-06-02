@@ -27,7 +27,7 @@ jobs:
         run: |
           mkdir -p .lake/build/lib
           curl -L -o .lake/build/lib/${{ matrix.filename }} \
-            https://github.com/chasenorman/Canonical/releases/download/lean/${{ matrix.filename }}
+            https://github.com/chasenorman/Canonical/releases/download/${{ github.event.inputs.tag }}/${{ matrix.filename }}
 
       - uses: leanprover/lean-action@v1
         with:
