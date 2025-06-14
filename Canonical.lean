@@ -10,21 +10,16 @@ structure Var where
 deriving Inhabited
 
 mutual
-  /-- The value of a let declaration, which can be a term,
-      custom reduction behavior (like recursor), or opaque. -/
-  inductive Value where
-  | definition : (term : Tm) → Value
-  | constructor : (type : String) → (index : USize) → (argsStart : USize) → Value
-  | recursor : (type : String) → (rules : Array Tm) → (shared : USize) → (major : USize) → Value
-  | projection : (type : String) → (index : USize) → (major : USize) → Value
-  | opaque : Value
-  deriving Inhabited
+  structure Rule where
+    lhs: Tm
+    rhs: Tm
+    name: Option String
 
   /-- A let declaration, with a name and value. -/
   structure Let where
     name: String
     irrelevant: Bool
-    value: Value
+    rules: Array Rule
   deriving Inhabited
 
   /-- A term is an n-ary, β-normal, η-long λ expression:
@@ -34,6 +29,9 @@ mutual
     lets: Array Let := #[]
     head: String
     args: Array Tm := #[]
+
+    premiseRules: Array String := #[]
+    goalRules: Array String := #[]
   deriving Inhabited
 end
 
@@ -61,10 +59,10 @@ instance : ToString Tm where toString := termToString
 instance : ToString Typ where toString := typToString
 
 /-- Generate terms of a given type, with given timeout, desired count, `synth` and `debug` flags -/
-@[never_extract, extern "canonical"] opaque canonical : @& Typ → UInt64 → USize → Bool → Bool → IO CanonicalResult
+@[never_extract, extern "canonical"] opaque canonical : @& Typ → UInt64 → USize → Bool → IO CanonicalResult
 
 /-- Start a server with the refinement UI on the given type. -/
-@[never_extract, extern "refine"] opaque refine : @& Typ → Bool → IO Unit
+@[never_extract, extern "refine"] opaque refine : @& Typ → IO Unit
 
 /-- Obtains the current term from the refinement UI. -/
 @[never_extract, extern "get_refinement"] opaque getRefinement : IO Tm
@@ -80,11 +78,15 @@ open Std Lean Elab.Tactic Expr Meta
     if this HardCode is triggered -/
 structure HardCode where
   define: List Name
+  rules: List Name
 
 /-- Rather than recursively unfolding definitions, `HARD_CODE` overrides
     the definitions introduced by a given symbol. -/
 def HARD_CODE : Std.HashMap (Name × Name) HardCode := .ofList [
-    ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[]⟩⟩
+    ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], []⟩⟩,
+    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [``Nat.add_zero, ``Nat.add_succ, ``Nat.zero_add, ``Nat.succ_add, ``Nat.add_assoc]⟩⟩,
+    ⟨⟨`Init.Prelude, `Nat.mul⟩, ⟨[], [``Nat.mul_zero, ``Nat.zero_mul, ``Nat.succ_mul, ``Nat.mul_succ, ``Nat.mul_assoc, ``Nat.mul_add, ``Nat.add_mul]⟩⟩,
+    ⟨⟨`Init.Prelude, `Nat.pow⟩, ⟨[], [``Nat.pow_zero, ``Nat.pow_succ, ``Nat.one_pow, ``Nat.pow_add]⟩⟩,
   ]
 
 def getHardCode (name : Name) : CoreM (Option HardCode) := do
@@ -98,7 +100,7 @@ def getHardCode (name : Name) : CoreM (Option HardCode) := do
 structure Definition where
   type: Option Typ := none
   irrelevant: Bool := false
-  value: Value := Value.opaque
+  rules: Array Rule := #[]
   shouldReplace: Bool := false
 
 /- def print_force (s : String) : IO Unit := do
@@ -169,19 +171,44 @@ def includeType (info : ConstantInfo) : ToCanonicalM Bool := do
   | .defnInfo info => pure <| !(isAuxRecursor (← getEnv) info.name) && (← includeLetType info.value)
   | _ => pure true
 
+def defRule (name : String) (defn : Tm) : Rule :=
+  ⟨{ head := name, args := defn.params.map (fun p => { head := p.name }) }, { defn with params := #[]}, none⟩
+
+def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (constructorVal : ConstructorVal) (rhs : Tm) : Rule :=
+  let ctorStart := (recVal.numParams+recVal.numMotives+recVal.numMinors);
+  let args : Array Tm := (rhs.params.shrink ctorStart).map (fun p => { head := p.name })
+  let ctorArgs : Array Tm := (rhs.params.toSubarray ctorStart (ctorStart + constructorVal.numFields)).toArray.map (fun p => { head := p.name })
+  let major : Tm := { head := constructor.toString, args := Array.replicate constructorVal.numParams { head := "*" } ++ ctorArgs}
+  let args : Array Tm := (args ++ Array.replicate recVal.numIndices ({ head := "*" } : Tm)).push major
+  let args := args ++ (rhs.params.toSubarray (ctorStart + constructorVal.numFields)).toArray.map (fun p => { head := p.name })
+  ⟨{head := recursor.toString, args := args }, { rhs with params := #[] }, none⟩
+
+def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (constructor : String) (constructorVal : ConstructorVal) (arity : Nat) : Rule :=
+  let ctorArgs : Array Tm := (Array.replicate (constructorVal.numParams + constructorVal.numFields) { head := "*" }).set! (constructorVal.numParams + projInfo.i) { head := "field" }
+  let fieldArgs : Array Tm := Array.ofFn (fun (i : Fin (arity - projInfo.numParams - 1)) => { head := "arg" ++ toString i.val })
+  let args : Array Tm := ((Array.replicate projInfo.numParams { head := "*"}).push { head := constructor, args := ctorArgs }) ++ fieldArgs
+  ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, none⟩
+
+def eqnRule (attribution : Option String) (typ : Typ) : Rule :=
+  ⟨typ.codomain.args[1]!, typ.codomain.args[2]!, attribution⟩
+
 mutual
   /-- At present, only small natural numbers are converted into a `Tm`. Other literals are `opaque`. -/
-  partial def defineLiteral (val : Literal) (insideLet : Nat) : ToCanonicalM String := do
-    let str := match val with | .natVal n => toString n | .strVal s => s!"\"{s}\""
-    let name := Name.mkSimple str
-    let type ← if insideLet > 0 then pure none else pure (some (← toTyp val.type insideLet))
-    if !(←get).contains name then do
-      match val with
-      | .natVal n =>
-        modify (·.insert name ⟨if n <= 5 then none else type, false, if n <= 5 then Value.definition (natToTerm n) else Value.opaque, insideLet > 0⟩)
-      | .strVal _ =>
-        modify (·.insert name ⟨type, false, Value.opaque, insideLet > 0⟩)
-    pure str
+  partial def defineLiteral (val : Literal) (insideLet : Nat) : ToCanonicalM Tm := do
+    match val with
+    | .natVal n =>
+      if n <= 5 then
+        pure (natToTerm n)
+      else
+        let name := Name.mkSimple (toString n)
+        if !(← get).contains name then do
+          modify (·.insert name ⟨some (← toTyp val.type insideLet), false, #[], insideLet > 0⟩)
+        pure { head := toString n }
+    | .strVal s =>
+      let name := Name.mkSimple s!"\"{s}\""
+      if !(← get).contains name then do
+        modify (·.insert name ⟨some (← toTyp val.type insideLet), false, #[], insideLet > 0⟩)
+      pure { head := s!"\"{s}\"" }
 
   /-- Insert `declName` into the `ToCanonicalM` definitions, with the correct type and value. -/
   partial def define (declName : Name) (insideLet : Nat) (force := false) : ToCanonicalM ConstantInfo := do
@@ -199,36 +226,41 @@ mutual
       | .recInfo _ => pure false
       | _ => pure ((!Lean.isAuxRecursor env decl.name) && isProp decl.type)
 
-      let value ← if ← Lean.isIrreducible declName then pure Value.opaque else
+      let rules ← if ← Lean.isIrreducible declName then pure #[] else
         if let some hard_code ← getHardCode declName then
           hard_code.define.forM fun name => do let _ ← define name insideLet
-          pure Value.opaque
+          hard_code.rules.toArray.mapM fun eqn => do
+            let type ← toTyp (← getConstInfo eqn).type insideLet
+            pure (eqnRule (if ← Lean.Meta.isRflTheorem eqn then none else some eqn.toString) type)
         else match env.getProjectionFnInfo? declName with
           | some info =>
-            let name := Option.get! (env.getProjectionStructureName? declName)
-            pure (Value.projection name.toString ⟨info.i⟩ ⟨info.numParams⟩)
+            pure #[projRule declName.toString info (info.ctorName.toString) (← getConstInfoCtor info.ctorName) (← forallArity decl.type)]
           | none => match decl with
-            | .ctorInfo ctor =>
-              let induct ← getConstInfoInduct ctor.induct
-              pure (Value.constructor induct.name.toString ⟨ctor.cidx⟩ ⟨induct.numParams⟩)
             | .recInfo info => do
-              let rules ← (info.rules.mapM (λ r => do
+              info.rules.toArray.mapM (λ r => do
                 let type ← inferType r.rhs
-                toTerm r.rhs type insideLet (← forallArity type)))
-              pure (Value.recursor info.getMajorInduct.toString ⟨rules⟩ ⟨info.getFirstIndexIdx⟩ ⟨info.getMajorIdx⟩)
+                let term ← toTerm r.rhs type insideLet (← forallArity type)
+                pure (recRule declName info r.ctor (← getConstInfoCtor r.ctor) term))
             | .inductInfo info =>
               info.ctors.forM fun ctor => do let _ ← define ctor insideLet
               match getStructureInfo? env declName with
               | some info => info.fieldInfo.forM fun field => do let _ ← define field.projFn insideLet
               | none => let _ ← define (mkRecName declName) insideLet
-              pure Value.opaque
-            | .defnInfo info => pure (Value.definition (← toTerm info.value decl.type (insideLet + (if ← includeLetType info.value then 1 else 0)) (← forallArity decl.type)))
-            | _ => pure Value.opaque
+              pure #[]
+            | .defnInfo info =>
+              if let some eqns ← getEqnsFor? declName then
+                eqns.mapM fun eqn => do
+                  let type ← toTyp (← getConstInfo eqn).type insideLet
+                  pure (eqnRule none type)
+              else
+                let defn ← toTerm info.value decl.type (insideLet + (if ← includeLetType info.value then 1 else 0)) (← forallArity decl.type)
+                pure #[defRule declName.toString defn]
+            | _ => pure #[]
 
       let defineType := force || (insideLet == 0 && !Lean.isClass env declName && ((env.getProjectionFnInfo? declName).isSome || (← includeType decl)))
       let type ← if defineType then pure (some (← toTyp decl.type insideLet)) else pure none
 
-      modify (·.insert declName ⟨type, irrelevant, value, insideLet > 0⟩)
+      modify (·.insert declName ⟨type, irrelevant, rules, insideLet > 0⟩)
     pure decl
 
   /-- Translate an `Expr` into a `Typ`, by collecting the `forallE` bindings and `app` arguments until a head symbol is reached.  -/
@@ -244,7 +276,7 @@ mutual
       let type ← MVarId.getType mvarId
       modify (·.insert mvarId.name {})
       pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ← toBody type params defs (toString mvarId.name) args insideLet (← paramArities type)⟩
-    | sort _u => pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ⟨⟨params.reverse⟩, ⟨defs⟩, "Sort", #[]⟩⟩
+    | sort _u => pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := "Sort" }⟩
     | const declName _us => do
       let decl ← define declName insideLet
       pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ← toBody decl.type params defs declName.toString args insideLet (← paramArities decl.type)⟩
@@ -253,14 +285,17 @@ mutual
       withLocalDecl binderName binderInfo binderType fun fvar => do
         match args with
         | [] => unreachable!
-        | arg :: args => toTyp (body.instantiate1 fvar) insideLet params paramTypes (none :: defTypes) (⟨← nameString fvar, ← isProp binderType, Value.definition (← toTerm arg binderType insideLet (← forallArity binderType))⟩ :: defs) args
+        | arg :: args =>
+          let defn ← toTerm arg binderType insideLet (← forallArity binderType)
+          toTyp (body.instantiate1 fvar) insideLet params paramTypes (none :: defTypes) (⟨← nameString fvar, ← isProp binderType, #[defRule (← nameString fvar) defn]⟩ :: defs) args
     | forallE binderName binderType body binderInfo =>
       withLocalDecl binderName binderInfo binderType fun fvar => do
         toTyp (body.instantiate1 fvar) insideLet (⟨← nameString fvar, ← isProp binderType⟩ :: params) ((←toTyp binderType insideLet) :: paramTypes) defTypes defs args
     | letE declName type value body _ =>
       withLetDecl declName type value fun fvar => do
-        toTyp (body.instantiate1 fvar) insideLet params paramTypes ((← toTyp type insideLet) :: defTypes) (⟨← nameString fvar, ← isProp type, Value.definition (← toTerm value type insideLet (← forallArity type))⟩ :: defs) args
-    | lit val => pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ⟨⟨params.reverse⟩, ⟨defs⟩, ← defineLiteral val insideLet, #[]⟩⟩
+        let defn ← toTerm value type insideLet (← forallArity type)
+        toTyp (body.instantiate1 fvar) insideLet params paramTypes ((← toTyp type insideLet) :: defTypes) (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) args
+    | lit val => pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, { ← defineLiteral val insideLet with params := ⟨params.reverse⟩, lets := ⟨defs⟩ }⟩
     | mdata _ expr => toTyp expr insideLet params paramTypes defTypes defs args
     | proj typeName idx struct => do
       let env ← getEnv
@@ -282,29 +317,31 @@ mutual
       | [] => unreachable!
       | arg :: typeArgs => do
         withLetDecl binderName binderType arg fun fvar => do
-          toBody (body.instantiate1 fvar) params (⟨← nameString fvar, false, Value.definition (← toTerm arg binderType insideLet (← forallArity binderType))⟩ :: defs) head args insideLet arity state typeArgs
+          let defn ← toTerm arg binderType insideLet (← forallArity binderType)
+          toBody (body.instantiate1 fvar) params (⟨← nameString fvar, false, #[defRule (← nameString fvar) defn]⟩ :: defs) head args insideLet arity state typeArgs
     | forallE binderName binderType body binderInfo =>
       match arity, args with
-      | [], arg :: args => pure ⟨⟨params.reverse⟩, ⟨defs⟩, (``Pi.f).toString, #[
+      | [], arg :: args => pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := (``Pi.f).toString, args := #[
           ← toTerm binderType (mkSort .zero) insideLet 0,
           ← toTerm (mkLambda binderName binderInfo binderType body) (mkForall binderName binderInfo binderType (mkSort .zero)) insideLet 1,
           ← toBody (body.instantiate1 arg) [] [] head args insideLet [] state [],
           ← toTerm arg binderType insideLet (← forallArity binderType)
-        ]⟩
+        ]}
       | n :: arity, arg :: args =>
         toBody (body.instantiate1 arg) params defs head args insideLet arity (state.push (← toTerm arg binderType insideLet n)) typeArgs
       | _, [] =>
         withLocalDecl binderName binderInfo binderType fun fvar => do
-            pure ⟨⟨params.reverse⟩, ⟨defs⟩, (``Pi.mk).toString, #[
+            pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := (``Pi.mk).toString, args := #[
               ← toTerm binderType (mkSort .zero) insideLet 0,
               ← toTerm (body.instantiate1 fvar) (mkSort .zero) insideLet 0 [⟨← nameString fvar, ← isProp binderType⟩],
               ← toBody (body.instantiate1 fvar) [⟨← nameString fvar, ← isProp binderType⟩] [] head (fvar :: args) insideLet arity state []
-            ]⟩
+            ]}
     | letE declName type value body _ =>
       withLetDecl declName type value fun fvar => do
-        toBody (body.instantiate1 fvar) params (⟨← nameString fvar, ← isProp type, Value.definition (← toTerm value type insideLet (← forallArity type))⟩ :: defs) head args insideLet arity state typeArgs
+        let defn ← toTerm value type insideLet (← forallArity type)
+        toBody (body.instantiate1 fvar) params (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) head args insideLet arity state typeArgs
     | mdata _ expr => toBody expr params defs head args insideLet arity state typeArgs
-    | _ => pure ⟨⟨params.reverse⟩, ⟨defs⟩, head, state⟩
+    | _ => pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head, args := state}
 
   /-- Transalate an `Expr` to a `Tm`, by collecting the `lam` bindings and `app` arguments until a head symbol is reached. -/
   partial def toTerm (term : Expr) (type : Expr) (insideLet : Nat) (arity : Nat) (params : List Var := []) (defs : List Let := []) (args : List Expr := []) (typeArgs : List Expr := []) : ToCanonicalM Tm := do
@@ -317,35 +354,39 @@ mutual
       | [] => unreachable!
       | typeArg :: typeArgs => do
         withLetDecl binderName binderType typeArg fun fvar => do
-          toTerm term (body.instantiate1 fvar) insideLet arity params (⟨← nameString fvar, ← isProp binderType, Value.definition (← toTerm typeArg binderType insideLet (← forallArity typeArg))⟩ :: defs) args typeArgs
+          let defn ← toTerm typeArg binderType insideLet (← forallArity typeArg)
+          toTerm term (body.instantiate1 fvar) insideLet arity params (⟨← nameString fvar, ← isProp binderType, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
     | _, letE declName type value body _, _ =>
       withLetDecl declName type value fun fvar => do
-        toTerm term (body.instantiate1 fvar) insideLet arity params (⟨← nameString fvar, ← isProp type, Value.definition (← toTerm value type insideLet (← forallArity type))⟩ :: defs) args typeArgs
+        let defn ← toTerm value type insideLet (← forallArity type)
+        toTerm term (body.instantiate1 fvar) insideLet arity params (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
     | _, mdata _ expr, _ => toTerm term expr insideLet arity params defs args typeArgs
     | lam binderName binderType body _binderInfo, _, arg :: args =>
       withLetDecl binderName binderType arg fun fvar => do
-        toTerm (body.instantiate1 fvar) type insideLet arity params (⟨← nameString fvar, ← isProp binderType, Value.definition (← toTerm arg binderType insideLet (← forallArity binderType))⟩ :: defs) args typeArgs
+        let defn ← toTerm arg binderType insideLet (← forallArity binderType)
+        toTerm (body.instantiate1 fvar) type insideLet arity params (⟨← nameString fvar, ← isProp binderType, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
     | letE declName type value body _, _, _ =>
       withLetDecl declName type value fun fvar => do
-        toTerm (body.instantiate1 fvar) type insideLet arity params (⟨← nameString fvar, ← isProp type, Value.definition (← toTerm value type insideLet (← forallArity type))⟩ :: defs) args typeArgs
+        let defn ← toTerm value type insideLet (← forallArity type)
+        toTerm (body.instantiate1 fvar) type insideLet arity params (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
     | mdata _ expr, _, _ => toTerm expr type insideLet arity params defs args typeArgs
     | lam binderName binderType body binderInfo, forallE _binderName' binderType' body' _binderInfo', [] =>
       withLocalDecl binderName binderInfo binderType fun fvar => do
         match arity with
-        | 0 => pure ⟨⟨params.reverse⟩, ⟨defs⟩, (``Pi.mk).toString, #[
+        | 0 => pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := (``Pi.mk).toString, args := #[
             ← toTerm binderType' (mkSort .zero) insideLet 0,
             ← toTerm (body'.instantiate1 fvar) (mkSort .zero) insideLet 1 [⟨← nameString fvar, ← isProp binderType⟩],
             ← toTerm (body.instantiate1 fvar) (body'.instantiate1 fvar) insideLet 0 [⟨← nameString fvar, ← isProp binderType⟩]
-          ]⟩
+          ]}
         | n + 1 => toTerm (body.instantiate1 fvar) (body'.instantiate1 fvar) insideLet n (⟨← nameString fvar, ← isProp binderType⟩ :: params) defs args typeArgs
     | _, forallE binderName binderType body binderInfo, _ =>
         withLocalDecl binderName binderInfo binderType fun fvar => do
           match arity with
-          | 0 => pure ⟨⟨params.reverse⟩, ⟨defs⟩, (``Pi.mk).toString, #[
+          | 0 => pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := (``Pi.mk).toString, args := #[
               ← toTerm binderType (mkSort .zero) insideLet 0,
               ← toTerm (body.instantiate1 fvar) (mkSort .zero) insideLet 0 [⟨← nameString fvar, ← isProp binderType⟩],
               ← toTerm term (body.instantiate1 fvar) insideLet 0 [⟨← nameString fvar, ← isProp binderType⟩] [] (args ++ [fvar]) []
-            ]⟩
+            ]}
           | n + 1 => toTerm term (body.instantiate1 fvar) insideLet n (⟨← nameString fvar, ← isProp binderType⟩ :: params) defs (args ++ [fvar])
     | lam _ _ _ _, const declName _, [] =>
       match (←Lean.getConstInfo declName).value? with
@@ -362,7 +403,7 @@ mutual
       let type ← MVarId.getType mvarId
       modify (·.insert mvarId.name {})
       toBody type params defs (toString mvarId.name) args insideLet (← paramArities type)
-    | sort _, _, _ => pure ⟨⟨params.reverse⟩, ⟨defs⟩, "Sort", #[]⟩
+    | sort _, _, _ => pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := "Sort" }
     | const declName _us, _, _ => do
       let decl ← define declName insideLet
       toBody decl.type params defs declName.toString args insideLet (← paramArities decl.type)
@@ -370,7 +411,7 @@ mutual
     | forallE binderName binderType body binderInfo, _, _ =>
       let bodyLam := mkLambda binderName binderInfo binderType body
       toTerm (mkAppN (mkConst ``Pi) #[binderType, bodyLam]) type insideLet arity params defs args typeArgs
-    | lit val, _, _ => pure ⟨⟨params.reverse⟩, ⟨defs⟩, ← defineLiteral val insideLet, #[]⟩
+    | lit val, _, _ => pure { ← defineLiteral val insideLet with params := ⟨params.reverse⟩, lets := ⟨defs⟩ }
     | proj typeName idx struct, _, _ => do
       let env ← getEnv
       let fields := getStructureFields env typeName
@@ -384,8 +425,8 @@ end
 def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) : ToCanonicalM Typ := do
   (← MonadLCtx.getLCtx).forM fun decl => do if !decl.isAuxDecl then
     match ← decl.value?.mapM (fun value => do toTerm value decl.type 0 (← forallArity decl.type)) with
-    | some term => modify (·.insert (← name decl.toExpr) ⟨none, ← isProp decl.type, Value.definition term, false⟩)
-    | none => modify (·.insert (← name decl.toExpr) ⟨some (← toTyp decl.type 0), ← isProp decl.type, Value.opaque, false⟩)
+    | some term => modify (·.insert (← name decl.toExpr) ⟨none, ← isProp decl.type, #[defRule (← name decl.toExpr).toString term], false⟩)
+    | none => modify (·.insert (← name decl.toExpr) ⟨some (← toTyp decl.type 0), ← isProp decl.type, #[], false⟩)
 
   consts.forM (fun stx => match stx with
     | Syntax.ident _ _ val _ => do
@@ -399,10 +440,10 @@ def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) : ToCanonicalM Typ
   )
   if pi then let _ := ← define ``Canonical.Pi 0 true
 
-  let ⟨paramTypes, defTypes, ⟨params, defs, head, args⟩⟩ ← toTyp e 0
-  let decls := (← get).toList.toArray.push ⟨Name.mkSimple "Sort", ⟨some ⟨#[], #[], ⟨#[], #[], "Sort", #[]⟩⟩, false, Value.opaque, false⟩⟩
+  let ⟨paramTypes, defTypes, ⟨params, defs, head, args, _, _⟩⟩ ← toTyp e 0
+  let decls := (← get).toList.toArray.push ⟨Name.mkSimple "Sort", ⟨some ⟨#[], #[], { head := "Sort"}⟩, false, #[], false⟩⟩
   pure ⟨paramTypes, decls.map (λ ⟨_, t⟩ => t.type) ++ defTypes,
-    ⟨params, (decls.map (λ ⟨name, t⟩ => ⟨name.toString false, t.irrelevant, t.value⟩) ++ defs), head, args⟩⟩
+    { params, lets := (decls.map (λ ⟨name, t⟩ => ⟨name.toString false, t.irrelevant, t.rules⟩) ++ defs), head, args }⟩
 
 /-- When translating from Canonical, we associate names in the `Tm` with corresponding Lean `FVarId`s -/
 abbrev FromCanonicalM := StateT (AssocList String FVarId) MetaM
@@ -415,6 +456,19 @@ def mvarLevels (n : Nat) : FromCanonicalM (List Level) := do
     let fresh ← mkFreshLMVarId
     let l ← mvarLevels m
     pure ((mkLevelMVar fresh) :: l)
+
+def toSyntax (premiseRules: Array String) (goalRules: Array String) : Syntax := Unhygienic.run do
+  let premiseRules := premiseRules.toList.toSSet.toList.toArray
+  let goalRules := goalRules.toList.toSSet.toList.toArray
+  let result ← if premiseRules.isEmpty then `(tacticSeq| exact $(TSyntax.mk .missing)) else
+    let cc : Array (TSyntax `ident) := premiseRules.map (fun s => mkIdent s.toName)
+    `(tacticSeq| simpa [$[$cc:ident],*] using $(TSyntax.mk .missing))
+  let result ← if goalRules.isEmpty then
+    `(term| by $result)
+  else do
+    let cc : Array (TSyntax `ident) := goalRules.map (fun s => mkIdent s.toName)
+    `(term| by simp [$[$cc:ident],*] <;> $(TSyntax.mk result))
+  pure result
 
 mutual
   /-- Builds a lambda expression of type `type` following the parameters of Tm `term`. -/
@@ -435,6 +489,10 @@ mutual
       withLetDecl binderName binderType value fun fvar =>
         toLam (body.instantiate1 fvar) term typeArgs paramIndex
     | _ =>
+      if (!term.premiseRules.isEmpty || !term.goalRules.isEmpty) then
+        return .mdata (KVMap.empty.insert `canonical (.ofSyntax (toSyntax term.premiseRules term.goalRules)))
+          (←toLam type { term with premiseRules := #[], goalRules := #[] } typeArgs paramIndex)
+
       do match (←get).find? term.head with
         | none =>
           if term.head = "Sort" then pure (mkSort (mkLevelMVar (← mkFreshLMVarId))) else
@@ -508,8 +566,6 @@ def canUnfold (e : Expr) : CoreM Bool := do
 structure CanonicalConfig where
   /-- Canonical produces `count` proofs. -/
   count: USize := 1
-  /-- Guarantees completeness with respect to iota reduction. -/
-  synth: Bool := false
   /-- Provides `(A → B) : Sort` as an axiom to Canonical. -/
   pi: Bool := false
   debug: Bool := false
@@ -575,6 +631,15 @@ def getRefinementStr (params : InsertParams) : RequestM (RequestTask String) :=
 def refineWidget : Widget.Module where
   javascript := include_str "refine.js"
 
+open PrettyPrinter Delaborator SubExpr in
+@[delab mdata.canonical]
+def delabCanonical : Delab := do
+  match ← getExpr with
+  | .mdata map _ =>
+    let result ← (map.getSyntax `canonical).replaceM (fun x =>
+      if x.isMissing then withMDataExpr delab else pure none)
+    pure (TSyntax.mk result)
+  | _ => throwError "delabCanonical called on non-mdata"
 
 syntax canonicalRuleSeq := " [" withoutPosition(term,*,?) "]"
 /-- Canonical exhaustively searches for terms in dependent type theory. -/
@@ -588,8 +653,6 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
   Meta.withCanUnfoldPred (λ config info => do pure ((← canUnfoldDefault config info) || (← canUnfold info.value!))) $ withReducibleAndInstances $ withMainContext do
     -- let start ← Std.Time.Timestamp.now
     let config ← canonicalConfig config
-    if config.synth then
-      throwError "`synth` is currently an unstable feature."
 
     let goal ← getMainTarget
     let type ← toCanonical goal argList config.pi |>.run' default
@@ -599,7 +662,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
       if Lean.LocalDecl.isAuxDecl decl then pure map else pure (map.insert (← nameString (mkFVar decl.fvarId)) decl.fvarId)) {}
 
     if config.refine then
-      let _ ← refine type config.synth
+      let _ ← refine type
       Elab.admitGoal (← getMainGoal)
       let fileMap ← getFileMap
       let strRange := (← getRef).getRange?.get!
@@ -619,7 +682,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
       dbg_trace type
     Core.checkInterrupted
     let task ← IO.asTask (prio := Task.Priority.dedicated)
-      (canonical type (UInt64.ofNat timeout) config.count config.synth config.debug)
+      (canonical type (UInt64.ofNat timeout) config.count config.debug)
     while !(← IO.hasFinished task) do
       if ← checkInterrupted then
         IO.cancel task
