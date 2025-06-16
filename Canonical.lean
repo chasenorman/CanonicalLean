@@ -83,7 +83,8 @@ structure HardCode where
 /-- Rather than recursively unfolding definitions, `HARD_CODE` overrides
     the definitions introduced by a given symbol. -/
 def HARD_CODE : HashMap (Name × Name) HardCode := .ofList [
-    ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], []⟩⟩
+    ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], []⟩⟩,
+    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.succ_add]⟩⟩
   ]
 
 def getHardCode (name : Name) : CoreM (Option HardCode) := do
@@ -314,7 +315,7 @@ mutual
               if let some eqns ← getEqnsFor? declName then
                 eqns.mapM fun eqn => do
                   let type ← toTyp (← getConstInfo eqn).type insideLet
-                  pure (eqnRule none type)
+                  pure (eqnRule eqn.toString type)
               else
                 let defn ← toTerm info.value decl.type (insideLet + (if ← includeLetType info.value then 1 else 0)) (← forallArity decl.type)
                 pure #[defRule declName.toString defn]
@@ -485,6 +486,26 @@ mutual
       toBody decl.type params defs declName.toString (structParams.toList ++ (struct :: args)) insideLet (← paramArities decl.type)
 end
 
+partial def onlyDefinedConsts (e : Expr) (constSet : HashSet Name) : MetaM Bool := do
+  let e ← whnf e
+  match e with
+  | bvar _ | fvar _ | mvar _ | sort _ | lit _ => pure true
+  | const declName _ => pure (constSet.contains declName)
+  | app fn arg => do
+    onlyDefinedConsts fn constSet <&&> onlyDefinedConsts arg constSet
+  | lam binderName binderType body binderInfo => do
+    withLocalDecl binderName binderInfo binderType fun fvar => do
+      onlyDefinedConsts (body.instantiate1 fvar) constSet
+  | forallE binderName binderType body binderInfo => do
+    withLocalDecl binderName binderInfo binderType fun fvar => do
+      onlyDefinedConsts (body.instantiate1 fvar) constSet
+  | letE declName type value body _ => do
+    withLetDecl declName type value fun fvar => do
+      onlyDefinedConsts (body.instantiate1 fvar) constSet
+  | mdata _ expr => onlyDefinedConsts expr constSet
+  | proj typeName _ expr => do
+    pure (constSet.contains typeName && (← onlyDefinedConsts expr constSet))
+
 /-- Converts an `Expr` `e` into a Canonical `Typ`, complete with `Definitions` in the `lets`. -/
 def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) : ToCanonicalM Typ := do
   (← MonadLCtx.getLCtx).forM fun decl => do if !decl.isAuxDecl then
@@ -505,6 +526,21 @@ def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) : ToCanonicalM Typ
   if pi then let _ := ← define ``Canonical.Pi 0 true
 
   let ⟨paramTypes, defTypes, ⟨params, defs, head, args, _, _⟩⟩ ← toTyp e 0
+
+  let constSet := (← get).toList.map (·.1) |> HashSet.ofList
+  let _ ← (← getSimpTheorems).lemmaNames.toList.forM fun origin => do
+    if let .decl name _ _ := origin then
+      let e := ((← getEnv).find? name |>.get!).type
+      if (← onlyDefinedConsts e constSet) && !(← isRflTheorem name) then
+        let typ ← toTyp e 0
+        if validSimpLemma typ then
+          let rule := eqnRule name.toString typ
+          if let some g' := addConstraint rule.lhs rule.rhs (← get) then
+            let c := rule.lhs.head.toName
+            if let some defn := g'.find? c then
+              if !cyclic g' then
+                set (g'.insert c { defn with rules := defn.rules.push rule })
+
   let decls := (← get).toList.toArray.push ⟨Name.mkSimple "Sort", { type := some {codomain := { head := "Sort"}} }⟩
   pure ⟨paramTypes, decls.map (λ ⟨_, t⟩ => t.type) ++ defTypes,
     { params, lets := (decls.map (λ ⟨name, t⟩ => ⟨name.toString false, t.irrelevant, t.rules⟩) ++ defs), head, args }⟩
