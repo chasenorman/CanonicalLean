@@ -1,4 +1,3 @@
 import Canonical
 
-example : Nat := by
-  canonical +refine
+example : 1^n = 1 := by canonical 1

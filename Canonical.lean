@@ -37,8 +37,8 @@ end
 
 /-- A type is an n-ary Π-type: `Π params lets . codomain` -/
 structure Typ where
-  params: Array (Option Typ)
-  lets: Array (Option Typ)
+  params: Array (Option Typ) := #[]
+  lets: Array (Option Typ) := #[]
   codomain: Tm
 deriving Inhabited
 
@@ -82,11 +82,8 @@ structure HardCode where
 
 /-- Rather than recursively unfolding definitions, `HARD_CODE` overrides
     the definitions introduced by a given symbol. -/
-def HARD_CODE : Std.HashMap (Name × Name) HardCode := .ofList [
-    ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], []⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [``Nat.add_zero, ``Nat.add_succ, ``Nat.zero_add, ``Nat.succ_add, ``Nat.add_assoc]⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.mul⟩, ⟨[], [``Nat.mul_zero, ``Nat.zero_mul, ``Nat.succ_mul, ``Nat.mul_succ, ``Nat.mul_assoc, ``Nat.mul_add, ``Nat.add_mul]⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.pow⟩, ⟨[], [``Nat.pow_zero, ``Nat.pow_succ, ``Nat.one_pow, ``Nat.pow_add]⟩⟩,
+def HARD_CODE : HashMap (Name × Name) HardCode := .ofList [
+    ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], []⟩⟩
   ]
 
 def getHardCode (name : Name) : CoreM (Option HardCode) := do
@@ -102,6 +99,49 @@ structure Definition where
   irrelevant: Bool := false
   rules: Array Rule := #[]
   shouldReplace: Bool := false
+  neighbors: Array Name := #[]
+deriving Inhabited
+
+abbrev WithVisited := StateT (HashSet Name) Id
+
+private partial def cyclicHelper (g : AssocList Name Definition) (u : Name)
+    (stack : HashSet Name) : WithVisited Bool := do
+  if stack.contains u then
+    pure true
+  else if (← get).contains u then
+    pure false
+  else
+    modify (·.insert u)
+    (g.find? u).get!.neighbors.anyM (λ v => cyclicHelper g v (stack.insert u))
+
+def cyclic (g : AssocList Name Definition) : Bool :=
+  (g.toList.anyM (λ (⟨u, _⟩ : Name × Definition) => cyclicHelper g u {})).run' {}
+
+partial def addConstraint (lhs : Tm) (rhs : Tm) (g : AssocList Name Definition) : Option (AssocList Name Definition) :=
+  (g.find? lhs.head.toName).bind (fun defn =>
+    if !g.contains rhs.head.toName then
+      g
+    else if lhs.head == rhs.head then
+      (lhs.args.zip rhs.args).firstM (fun ⟨l, r⟩ => addConstraint l r g)
+    else
+      g.replace lhs.head.toName { defn with neighbors := defn.neighbors.push rhs.head.toName }
+  )
+
+def addConstraints (rules : Array Rule) (g : AssocList Name Definition) : Option (AssocList Name Definition) :=
+  rules.foldlM (fun g rule => addConstraint rule.lhs rule.rhs g) g
+
+partial def contains (t : Tm) (v : String) : Bool :=
+  t.head == v || t.args.any (fun x => contains x v)
+
+/-- Not a complete test. TODO Filter out isRflTheorem -/
+def validSimpLemma (typ : Typ) : Bool :=
+  if typ.codomain.head != "Eq" then
+     false -- not an equality
+  else if typ.params.any (fun x => !x.get!.params.isEmpty) then
+    false -- higher order
+  else if typ.codomain.params.any (fun x => !contains typ.codomain.args[1]! x.name) then
+    false -- unbound variable
+  else true
 
 /- def print_force (s : String) : IO Unit := do
   let handle ← IO.FS.Handle.mk "output.txt" IO.FS.Mode.append
@@ -192,6 +232,16 @@ def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (construc
 def eqnRule (attribution : Option String) (typ : Typ) : Rule :=
   ⟨typ.codomain.args[1]!, typ.codomain.args[2]!, attribution⟩
 
+-- def addSimpLemma (name : Option String) (typ : Typ) (g : Graph) : Option (Graph × Rule) :=
+--   if !validSimpLemma typ then
+--     none
+--   else
+--     let ctx : Std.HashSet String := {}
+--     let ctx := ctx.insertMany (typ.codomain.params.map (·.name))
+--     let ctx := ctx.insertMany (typ.codomain.lets.map (·.name))
+--     let rule := eqnRule name typ
+--     (addConstraint rule ctx g).map (·, rule)
+
 mutual
   /-- At present, only small natural numbers are converted into a `Tm`. Other literals are `opaque`. -/
   partial def defineLiteral (val : Literal) (insideLet : Nat) : ToCanonicalM Tm := do
@@ -202,12 +252,12 @@ mutual
       else
         let name := Name.mkSimple (toString n)
         if !(← get).contains name then do
-          modify (·.insert name ⟨some (← toTyp val.type insideLet), false, #[], insideLet > 0⟩)
+          modify (·.insert name { type := ← toTyp val.type insideLet, shouldReplace := insideLet > 0 })
         pure { head := toString n }
     | .strVal s =>
       let name := Name.mkSimple s!"\"{s}\""
       if !(← get).contains name then do
-        modify (·.insert name ⟨some (← toTyp val.type insideLet), false, #[], insideLet > 0⟩)
+        modify (·.insert name { type := ← toTyp val.type insideLet, shouldReplace := insideLet > 0 })
       pure { head := s!"\"{s}\"" }
 
   /-- Insert `declName` into the `ToCanonicalM` definitions, with the correct type and value. -/
@@ -222,9 +272,23 @@ mutual
     if shouldDefine then
       modify (·.insert declName {})
 
+      let defineType := force || (insideLet == 0 && !Lean.isClass env declName && ((env.getProjectionFnInfo? declName).isSome || (← includeType decl)))
+      let type ← if defineType then pure (some (← toTyp decl.type insideLet)) else pure none
+
       let irrelevant ← match decl with
       | .recInfo _ => pure false
       | _ => pure ((!Lean.isAuxRecursor env decl.name) && isProp decl.type)
+
+      if let some type := type then
+        if validSimpLemma type && !(← isRflTheorem decl.name) then
+          let rule := eqnRule decl.name.toString type
+          if let some g' := addConstraint rule.lhs rule.rhs (← get) then
+            let c := rule.lhs.head.toName
+            if let some defn := g'.find? c then
+              if !cyclic g' then
+                set (g'.insert c { defn with rules := defn.rules.push rule })
+
+
 
       let rules ← if ← Lean.isIrreducible declName then pure #[] else
         if let some hard_code ← getHardCode declName then
@@ -255,12 +319,13 @@ mutual
               else
                 let defn ← toTerm info.value decl.type (insideLet + (if ← includeLetType info.value then 1 else 0)) (← forallArity decl.type)
                 pure #[defRule declName.toString defn]
-            | _ => pure #[]
+            | _ =>
+              pure #[]
 
-      let defineType := force || (insideLet == 0 && !Lean.isClass env declName && ((env.getProjectionFnInfo? declName).isSome || (← includeType decl)))
-      let type ← if defineType then pure (some (← toTyp decl.type insideLet)) else pure none
 
-      modify (·.insert declName ⟨type, irrelevant, rules, insideLet > 0⟩)
+
+      modify (·.insert declName ⟨type, irrelevant, rules, insideLet > 0, #[]⟩)
+      modify (fun x => (addConstraints rules x).get!)
     pure decl
 
   /-- Translate an `Expr` into a `Typ`, by collecting the `forallE` bindings and `app` arguments until a head symbol is reached.  -/
@@ -425,8 +490,8 @@ end
 def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) : ToCanonicalM Typ := do
   (← MonadLCtx.getLCtx).forM fun decl => do if !decl.isAuxDecl then
     match ← decl.value?.mapM (fun value => do toTerm value decl.type 0 (← forallArity decl.type)) with
-    | some term => modify (·.insert (← name decl.toExpr) ⟨none, ← isProp decl.type, #[defRule (← name decl.toExpr).toString term], false⟩)
-    | none => modify (·.insert (← name decl.toExpr) ⟨some (← toTyp decl.type 0), ← isProp decl.type, #[], false⟩)
+    | some term => modify (·.insert (← name decl.toExpr) ⟨none, ← isProp decl.type, #[defRule (← name decl.toExpr).toString term], false, #[]⟩)
+    | none => modify (·.insert (← name decl.toExpr) ⟨some (← toTyp decl.type 0), ← isProp decl.type, #[], false, #[]⟩)
 
   consts.forM (fun stx => match stx with
     | Syntax.ident _ _ val _ => do
@@ -441,7 +506,7 @@ def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) : ToCanonicalM Typ
   if pi then let _ := ← define ``Canonical.Pi 0 true
 
   let ⟨paramTypes, defTypes, ⟨params, defs, head, args, _, _⟩⟩ ← toTyp e 0
-  let decls := (← get).toList.toArray.push ⟨Name.mkSimple "Sort", ⟨some ⟨#[], #[], { head := "Sort"}⟩, false, #[], false⟩⟩
+  let decls := (← get).toList.toArray.push ⟨Name.mkSimple "Sort", { type := some {codomain := { head := "Sort"}} }⟩
   pure ⟨paramTypes, decls.map (λ ⟨_, t⟩ => t.type) ++ defTypes,
     { params, lets := (decls.map (λ ⟨name, t⟩ => ⟨name.toString false, t.irrelevant, t.rules⟩) ++ defs), head, args }⟩
 
@@ -678,6 +743,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
     let timeout := match timeout_syntax with
     | some n => n.getNat
     | none => 10
+
     if config.debug then
       dbg_trace type
     Core.checkInterrupted
