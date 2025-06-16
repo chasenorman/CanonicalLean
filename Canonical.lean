@@ -287,8 +287,7 @@ mutual
             if let some defn := g'.find? c then
               if !cyclic g' then
                 set (g'.insert c { defn with rules := defn.rules.push rule })
-
-
+                return decl
 
       let rules ← if ← Lean.isIrreducible declName then pure #[] else
         if let some hard_code ← getHardCode declName then
