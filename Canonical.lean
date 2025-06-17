@@ -14,6 +14,7 @@ mutual
     lhs: Tm
     rhs: Tm
     name: Option String
+    isRedex: Bool
 
   /-- A let declaration, with a name and value. -/
   structure Let where
@@ -213,7 +214,7 @@ def includeType (info : ConstantInfo) : ToCanonicalM Bool := do
   | _ => pure true
 
 def defRule (name : String) (defn : Tm) : Rule :=
-  ⟨{ head := name, args := defn.params.map (fun p => { head := p.name }) }, { defn with params := #[]}, none⟩
+  ⟨{ head := name, args := defn.params.map (fun p => { head := p.name }) }, { defn with params := #[]}, none, false⟩
 
 def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (constructorVal : ConstructorVal) (rhs : Tm) : Rule :=
   let ctorStart := (recVal.numParams+recVal.numMotives+recVal.numMinors);
@@ -222,16 +223,16 @@ def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (const
   let major : Tm := { head := constructor.toString, args := Array.replicate constructorVal.numParams { head := "*" } ++ ctorArgs}
   let args : Array Tm := (args ++ Array.replicate recVal.numIndices ({ head := "*" } : Tm)).push major
   let args := args ++ (rhs.params.toSubarray (ctorStart + constructorVal.numFields)).toArray.map (fun p => { head := p.name })
-  ⟨{head := recursor.toString, args := args }, { rhs with params := #[] }, none⟩
+  ⟨{head := recursor.toString, args := args }, { rhs with params := #[] }, none, true⟩
 
 def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (constructor : String) (constructorVal : ConstructorVal) (arity : Nat) : Rule :=
   let ctorArgs : Array Tm := (Array.replicate (constructorVal.numParams + constructorVal.numFields) { head := "*" }).set! (constructorVal.numParams + projInfo.i) { head := "field" }
   let fieldArgs : Array Tm := Array.ofFn (fun (i : Fin (arity - projInfo.numParams - 1)) => { head := "arg" ++ toString i.val })
   let args : Array Tm := ((Array.replicate projInfo.numParams { head := "*"}).push { head := constructor, args := ctorArgs }) ++ fieldArgs
-  ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, none⟩
+  ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, none, true⟩
 
 def eqnRule (attribution : Option String) (typ : Typ) : Rule :=
-  ⟨typ.codomain.args[1]!, typ.codomain.args[2]!, attribution⟩
+  ⟨typ.codomain.args[1]!, typ.codomain.args[2]!, attribution, true⟩
 
 -- def addSimpLemma (name : Option String) (typ : Typ) (g : Graph) : Option (Graph × Rule) :=
 --   if !validSimpLemma typ then
@@ -527,14 +528,15 @@ def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) : ToCanonicalM Typ
 
   let ⟨paramTypes, defTypes, ⟨params, defs, head, args, _, _⟩⟩ ← toTyp e 0
 
+  -- TODO hangs if Mathlib is imported
   let constSet := (← get).toList.map (·.1) |> HashSet.ofList
   let _ ← (← getSimpTheorems).lemmaNames.toList.forM fun origin => do
     if let .decl name _ _ := origin then
       let e := ((← getEnv).find? name |>.get!).type
       if (← onlyDefinedConsts e constSet) && !(← isRflTheorem name) then
-        let typ ← toTyp e 0
+        let typ ← toTyp e 1
         if validSimpLemma typ then
-          let rule := eqnRule name.toString typ
+          let rule := eqnRule name.toString typ -- TODO simp has this theorem by default, but [] case.
           if let some g' := addConstraint rule.lhs rule.rhs (← get) then
             let c := rule.lhs.head.toName
             if let some defn := g'.find? c then
