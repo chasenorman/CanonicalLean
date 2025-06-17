@@ -85,7 +85,7 @@ structure HardCode where
     the definitions introduced by a given symbol. -/
 def HARD_CODE : HashMap (Name × Name) HardCode := .ofList [
     ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], []⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.succ_add]⟩⟩
+    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.zero_add, `Nat.succ_add]⟩⟩
   ]
 
 def getHardCode (name : Name) : CoreM (Option HardCode) := do
@@ -132,8 +132,13 @@ partial def addConstraint (lhs : Tm) (rhs : Tm) (g : AssocList Name Definition) 
 def addConstraints (rules : Array Rule) (g : AssocList Name Definition) : Option (AssocList Name Definition) :=
   rules.foldlM (fun g rule => addConstraint rule.lhs rule.rhs g) g
 
-partial def contains (t : Tm) (v : String) : Bool :=
-  t.head == v || t.args.any (fun x => contains x v)
+partial def count (t : Tm) (v : String) : Nat :=
+  t.args.foldl (init := if t.head == v then 1 else 0) (· + count · v)
+
+partial def containsLambda (t : Tm) : Bool :=
+  if t.params.isEmpty then
+    t.args.any containsLambda
+  else true
 
 /-- Not a complete test. TODO Filter out isRflTheorem -/
 def validSimpLemma (typ : Typ) : Bool :=
@@ -141,8 +146,10 @@ def validSimpLemma (typ : Typ) : Bool :=
      false -- not an equality
   else if typ.params.any (fun x => !x.get!.params.isEmpty) then
     false -- higher order
-  else if typ.codomain.params.any (fun x => !contains typ.codomain.args[1]! x.name) then
-    false -- unbound variable
+  else if typ.codomain.params.any (fun x => count typ.codomain.args[1]! x.name != 1) then
+    false -- unbound or overused variable
+  else if containsLambda typ.codomain.args[1]! then
+    false -- potentially requires fvars do not use the lambda
   else true
 
 /- def print_force (s : String) : IO Unit := do
@@ -507,6 +514,17 @@ partial def onlyDefinedConsts (e : Expr) (constSet : HashSet Name) : MetaM Bool 
   | proj typeName _ expr => do
     pure (constSet.contains typeName && (← onlyDefinedConsts expr constSet))
 
+partial def getOrigins (constSet : HashSet Name) (trie : Lean.Meta.DiscrTree.Trie SimpTheorem) : Array Origin :=
+  match trie with
+  | Lean.Meta.DiscrTree.Trie.node vs children =>
+    let filtered := children.filter (fun (child : Lean.Meta.DiscrTree.Key × DiscrTree.Trie SimpTheorem) =>
+      match child.1 with
+      | Lean.Meta.DiscrTree.Key.const name _ => constSet.contains name
+      | Lean.Meta.DiscrTree.Key.arrow => false
+      | _ => true
+    )
+    vs.map (·.origin) ++ filtered.flatMap (fun x => getOrigins constSet x.2)
+
 /-- Converts an `Expr` `e` into a Canonical `Typ`, complete with `Definitions` in the `lets`. -/
 def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) : ToCanonicalM Typ := do
   (← MonadLCtx.getLCtx).forM fun decl => do if !decl.isAuxDecl then
@@ -528,10 +546,16 @@ def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) : ToCanonicalM Typ
 
   let ⟨paramTypes, defTypes, ⟨params, defs, head, args, _, _⟩⟩ ← toTyp e 0
 
-  -- TODO hangs if Mathlib is imported
-  let constSet := (← get).toList.map (·.1) |> HashSet.ofList
-  let _ ← (← getSimpTheorems).lemmaNames.toList.forM fun origin => do
+  let constArray := (← get).toList.toArray
+  let constSet := HashSet.ofArray (constArray.map (·.1))
+  let thms ← getSimpTheorems
+  let tries := constArray.filterMap (fun x =>
+    x.2.type.bind fun typ => thms.post.root.find? (.const x.1 typ.params.size)
+  )
+  let origins := tries.flatMap (getOrigins constSet)
+  let _ ← origins.forM fun origin => do
     if let .decl name _ _ := origin then
+      dbg_trace name
       let e := ((← getEnv).find? name |>.get!).type
       if (← onlyDefinedConsts e constSet) && !(← isRflTheorem name) then
         let typ ← toTyp e 1
