@@ -160,6 +160,10 @@ def validSimpLemma (typ : Typ) : Bool :=
 /-- When translating to Canonical, we maintain a state of translated constant symbols. -/
 abbrev ToCanonicalM := StateT (AssocList Name Definition) MetaM
 
+structure Settings where
+  depth: Nat := 0
+  simp: Bool
+
 /-- For readability, we identify free variables by their `userName`,
     but with the suffix of the `FVarId.name` for completeness. -/
 def name : Expr → MetaM Name
@@ -241,19 +245,9 @@ def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (construc
 def eqnRule (attribution : Option String) (typ : Typ) : Rule :=
   ⟨typ.codomain.args[1]!, typ.codomain.args[2]!, attribution, true⟩
 
--- def addSimpLemma (name : Option String) (typ : Typ) (g : Graph) : Option (Graph × Rule) :=
---   if !validSimpLemma typ then
---     none
---   else
---     let ctx : Std.HashSet String := {}
---     let ctx := ctx.insertMany (typ.codomain.params.map (·.name))
---     let ctx := ctx.insertMany (typ.codomain.lets.map (·.name))
---     let rule := eqnRule name typ
---     (addConstraint rule ctx g).map (·, rule)
-
 mutual
   /-- At present, only small natural numbers are converted into a `Tm`. Other literals are `opaque`. -/
-  partial def defineLiteral (val : Literal) (insideLet : Nat) : ToCanonicalM Tm := do
+  partial def defineLiteral (val : Literal) (settings : Settings) : ToCanonicalM Tm := do
     match val with
     | .natVal n =>
       if n <= 5 then
@@ -261,19 +255,19 @@ mutual
       else
         let name := Name.mkSimple (toString n)
         if !(← get).contains name then do
-          modify (·.insert name { type := ← toTyp val.type insideLet, shouldReplace := insideLet > 0 })
+          modify (·.insert name { type := ← toTyp val.type settings, shouldReplace := settings.depth > 0 })
         pure { head := toString n }
     | .strVal s =>
       let name := Name.mkSimple s!"\"{s}\""
       if !(← get).contains name then do
-        modify (·.insert name { type := ← toTyp val.type insideLet, shouldReplace := insideLet > 0 })
+        modify (·.insert name { type := ← toTyp val.type settings, shouldReplace := settings.depth > 0 })
       pure { head := s!"\"{s}\"" }
 
   /-- Insert `declName` into the `ToCanonicalM` definitions, with the correct type and value. -/
-  partial def define (declName : Name) (insideLet : Nat) (force := false) : ToCanonicalM ConstantInfo := do
+  partial def define (declName : Name) (settings : Settings) (force := false) : ToCanonicalM ConstantInfo := do
     let shouldDefine := force || match (←get).find? declName with
-    | some decl => decl.shouldReplace && insideLet == 0
-    | none => insideLet < 3
+    | some decl => decl.shouldReplace && settings.depth == 0
+    | none => settings.depth < 3
 
     let env ← getEnv
     let decl := env.find? declName |>.get!
@@ -281,28 +275,29 @@ mutual
     if shouldDefine then
       modify (·.insert declName {})
 
-      let defineType := force || (insideLet == 0 && !Lean.isClass env declName && ((env.getProjectionFnInfo? declName).isSome || (← includeType decl)))
-      let type ← if defineType then pure (some (← toTyp decl.type insideLet)) else pure none
+      let defineType := force || (settings.depth == 0 && !Lean.isClass env declName && ((env.getProjectionFnInfo? declName).isSome || (← includeType decl)))
+      let type ← if defineType then pure (some (← toTyp decl.type settings)) else pure none
 
       let irrelevant ← match decl with
       | .recInfo _ => pure false
       | _ => pure ((!Lean.isAuxRecursor env decl.name) && isProp decl.type)
 
-      if let some type := type then
-        if validSimpLemma type && !(← isRflTheorem decl.name) then
-          let rule := eqnRule decl.name.toString type
-          if let some g' := addConstraint rule.lhs rule.rhs (← get) then
-            let c := rule.lhs.head.toName
-            if let some defn := g'.find? c then
-              if !cyclic g' then
-                set (g'.insert c { defn with rules := defn.rules.push rule })
-                return decl
+      if settings.simp then
+        if let some type := type then
+          if validSimpLemma type && !(← isRflTheorem decl.name) then
+            let rule := eqnRule decl.name.toString type
+            if let some g' := addConstraint rule.lhs rule.rhs (← get) then
+              let c := rule.lhs.head.toName
+              if let some defn := g'.find? c then
+                if !cyclic g' then
+                  set (g'.insert c { defn with rules := defn.rules.push rule })
+                  return decl
 
       let rules ← if ← Lean.isIrreducible declName then pure #[] else
         if let some hard_code ← getHardCode declName then
-          hard_code.define.forM fun name => do let _ ← define name insideLet
+          hard_code.define.forM fun name => do let _ ← define name settings
           hard_code.rules.toArray.mapM fun eqn => do
-            let type ← toTyp (← getConstInfo eqn).type insideLet
+            let type ← toTyp (← getConstInfo eqn).type settings
             pure (eqnRule (if ← Lean.Meta.isRflTheorem eqn then none else some eqn.toString) type)
         else match env.getProjectionFnInfo? declName with
           | some info =>
@@ -311,187 +306,189 @@ mutual
             | .recInfo info => do
               info.rules.toArray.mapM (λ r => do
                 let type ← inferType r.rhs
-                let term ← toTerm r.rhs type insideLet (← forallArity type)
+                let term ← toTerm r.rhs type settings (← forallArity type)
                 pure (recRule declName info r.ctor (← getConstInfoCtor r.ctor) term))
             | .inductInfo info =>
-              info.ctors.forM fun ctor => do let _ ← define ctor insideLet
+              info.ctors.forM fun ctor => do let _ ← define ctor settings
               match getStructureInfo? env declName with
-              | some info => info.fieldInfo.forM fun field => do let _ ← define field.projFn insideLet
-              | none => let _ ← define (mkRecName declName) insideLet
+              | some info => info.fieldInfo.forM fun field => do let _ ← define field.projFn settings
+              | none => let _ ← define (mkRecName declName) settings
               pure #[]
             | .defnInfo info =>
               if let some eqns ← getEqnsFor? declName then
                 eqns.mapM fun eqn => do
-                  let type ← toTyp (← getConstInfo eqn).type insideLet
+                  let type ← toTyp (← getConstInfo eqn).type settings
                   pure (eqnRule eqn.toString type)
               else
-                let defn ← toTerm info.value decl.type (insideLet + (if ← includeLetType info.value then 1 else 0)) (← forallArity decl.type)
+                let defn ← toTerm info.value decl.type
+                  { settings with depth := settings.depth + (if ← includeLetType info.value then 1 else 0) }
+                  (← forallArity decl.type)
                 pure #[defRule declName.toString defn]
             | _ =>
               pure #[]
 
 
 
-      modify (·.insert declName ⟨type, irrelevant, rules, insideLet > 0, #[]⟩)
+      modify (·.insert declName ⟨type, irrelevant, rules, settings.depth > 0, #[]⟩)
       modify (fun x => (addConstraints rules x).get!)
     pure decl
 
   /-- Translate an `Expr` into a `Typ`, by collecting the `forallE` bindings and `app` arguments until a head symbol is reached.  -/
-  partial def toTyp (e : Expr) (insideLet : Nat) (params : List Var := []) (paramTypes : List (Option Typ) := []) (defTypes : List (Option Typ) := []) (defs : List Let := []) (args : List Expr := [])
+  partial def toTyp (e : Expr) (settings : Settings) (params : List Var := []) (paramTypes : List (Option Typ) := []) (defTypes : List (Option Typ) := []) (defs : List Let := []) (args : List Expr := [])
      : ToCanonicalM Typ := do
     let e ← whnf e
     match e with
     | bvar _ => unreachable!
     | fvar fvarId =>
       let decl := (← MonadLCtx.getLCtx).get! fvarId
-      pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ← toBody decl.type params defs (← nameString e) args insideLet (← paramArities decl.type)⟩
+      pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ← toBody decl.type params defs (← nameString e) args settings (← paramArities decl.type)⟩
     | mvar mvarId =>
       let type ← MVarId.getType mvarId
       modify (·.insert mvarId.name {})
-      pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ← toBody type params defs (toString mvarId.name) args insideLet (← paramArities type)⟩
+      pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ← toBody type params defs (toString mvarId.name) args settings (← paramArities type)⟩
     | sort _u => pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := "Sort" }⟩
     | const declName _us => do
-      let decl ← define declName insideLet
-      pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ← toBody decl.type params defs declName.toString args insideLet (← paramArities decl.type)⟩
-    | app fn arg => toTyp fn insideLet params paramTypes defTypes defs (arg :: args)
+      let decl ← define declName settings
+      pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ← toBody decl.type params defs declName.toString args settings (← paramArities decl.type)⟩
+    | app fn arg => toTyp fn settings params paramTypes defTypes defs (arg :: args)
     | lam binderName binderType body binderInfo =>
       withLocalDecl binderName binderInfo binderType fun fvar => do
         match args with
         | [] => unreachable!
         | arg :: args =>
-          let defn ← toTerm arg binderType insideLet (← forallArity binderType)
-          toTyp (body.instantiate1 fvar) insideLet params paramTypes (none :: defTypes) (⟨← nameString fvar, ← isProp binderType, #[defRule (← nameString fvar) defn]⟩ :: defs) args
+          let defn ← toTerm arg binderType settings (← forallArity binderType)
+          toTyp (body.instantiate1 fvar) settings params paramTypes (none :: defTypes) (⟨← nameString fvar, ← isProp binderType, #[defRule (← nameString fvar) defn]⟩ :: defs) args
     | forallE binderName binderType body binderInfo =>
       withLocalDecl binderName binderInfo binderType fun fvar => do
-        toTyp (body.instantiate1 fvar) insideLet (⟨← nameString fvar, ← isProp binderType⟩ :: params) ((←toTyp binderType insideLet) :: paramTypes) defTypes defs args
+        toTyp (body.instantiate1 fvar) settings (⟨← nameString fvar, ← isProp binderType⟩ :: params) ((←toTyp binderType settings) :: paramTypes) defTypes defs args
     | letE declName type value body _ =>
       withLetDecl declName type value fun fvar => do
-        let defn ← toTerm value type insideLet (← forallArity type)
-        toTyp (body.instantiate1 fvar) insideLet params paramTypes ((← toTyp type insideLet) :: defTypes) (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) args
-    | lit val => pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, { ← defineLiteral val insideLet with params := ⟨params.reverse⟩, lets := ⟨defs⟩ }⟩
-    | mdata _ expr => toTyp expr insideLet params paramTypes defTypes defs args
+        let defn ← toTerm value type settings (← forallArity type)
+        toTyp (body.instantiate1 fvar) settings params paramTypes ((← toTyp type settings) :: defTypes) (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) args
+    | lit val => pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, { ← defineLiteral val settings with params := ⟨params.reverse⟩, lets := ⟨defs⟩ }⟩
+    | mdata _ expr => toTyp expr settings params paramTypes defTypes defs args
     | proj typeName idx struct => do
       let env ← getEnv
       let fields := getStructureFields env typeName
       let structParams := (←withDefault (whnf (← inferType struct))).getAppArgs
       let declName := Option.get! $ getProjFnForField? env typeName fields[idx]!
-      let decl ← define declName insideLet
-      let body ← toBody decl.type params defs declName.toString (structParams.toList ++ (struct :: args)) insideLet (← paramArities decl.type)
+      let decl ← define declName settings
+      let body ← toBody decl.type params defs declName.toString (structParams.toList ++ (struct :: args)) settings (← paramArities decl.type)
       pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, body⟩
 
   /-- When we reach the head symbol, we call `toBody` with its type and `paramArities`.
       This function is responsible for recursively tranlating the arguments and building the resultant `Tm`. -/
-  partial def toBody (ty : Expr) (params : List Var) (defs : List Let) (head : String) (args : List Expr) (insideLet : Nat) (arity : List Nat) (state : Array Tm := #[]) (typeArgs : List Expr := []) : ToCanonicalM Tm := do
+  partial def toBody (ty : Expr) (params : List Var) (defs : List Let) (head : String) (args : List Expr) (settings : Settings) (arity : List Nat) (state : Array Tm := #[]) (typeArgs : List Expr := []) : ToCanonicalM Tm := do
     let ty ← whnf ty
     match ty with
-    | app fn arg => toBody fn params defs head args insideLet arity state (arg :: typeArgs)
+    | app fn arg => toBody fn params defs head args settings arity state (arg :: typeArgs)
     | lam binderName binderType body _binderInfo =>
       match typeArgs with
       | [] => unreachable!
       | arg :: typeArgs => do
         withLetDecl binderName binderType arg fun fvar => do
-          let defn ← toTerm arg binderType insideLet (← forallArity binderType)
-          toBody (body.instantiate1 fvar) params (⟨← nameString fvar, false, #[defRule (← nameString fvar) defn]⟩ :: defs) head args insideLet arity state typeArgs
+          let defn ← toTerm arg binderType settings (← forallArity binderType)
+          toBody (body.instantiate1 fvar) params (⟨← nameString fvar, false, #[defRule (← nameString fvar) defn]⟩ :: defs) head args settings arity state typeArgs
     | forallE binderName binderType body binderInfo =>
       match arity, args with
       | [], arg :: args => pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := (``Pi.f).toString, args := #[
-          ← toTerm binderType (mkSort .zero) insideLet 0,
-          ← toTerm (mkLambda binderName binderInfo binderType body) (mkForall binderName binderInfo binderType (mkSort .zero)) insideLet 1,
-          ← toBody (body.instantiate1 arg) [] [] head args insideLet [] state [],
-          ← toTerm arg binderType insideLet (← forallArity binderType)
+          ← toTerm binderType (mkSort .zero) settings 0,
+          ← toTerm (mkLambda binderName binderInfo binderType body) (mkForall binderName binderInfo binderType (mkSort .zero)) settings 1,
+          ← toBody (body.instantiate1 arg) [] [] head args settings [] state [],
+          ← toTerm arg binderType settings (← forallArity binderType)
         ]}
       | n :: arity, arg :: args =>
-        toBody (body.instantiate1 arg) params defs head args insideLet arity (state.push (← toTerm arg binderType insideLet n)) typeArgs
+        toBody (body.instantiate1 arg) params defs head args settings arity (state.push (← toTerm arg binderType settings n)) typeArgs
       | _, [] =>
         withLocalDecl binderName binderInfo binderType fun fvar => do
             pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := (``Pi.mk).toString, args := #[
-              ← toTerm binderType (mkSort .zero) insideLet 0,
-              ← toTerm (body.instantiate1 fvar) (mkSort .zero) insideLet 0 [⟨← nameString fvar, ← isProp binderType⟩],
-              ← toBody (body.instantiate1 fvar) [⟨← nameString fvar, ← isProp binderType⟩] [] head (fvar :: args) insideLet arity state []
+              ← toTerm binderType (mkSort .zero) settings 0,
+              ← toTerm (body.instantiate1 fvar) (mkSort .zero) settings 0 [⟨← nameString fvar, ← isProp binderType⟩],
+              ← toBody (body.instantiate1 fvar) [⟨← nameString fvar, ← isProp binderType⟩] [] head (fvar :: args) settings arity state []
             ]}
     | letE declName type value body _ =>
       withLetDecl declName type value fun fvar => do
-        let defn ← toTerm value type insideLet (← forallArity type)
-        toBody (body.instantiate1 fvar) params (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) head args insideLet arity state typeArgs
-    | mdata _ expr => toBody expr params defs head args insideLet arity state typeArgs
+        let defn ← toTerm value type settings (← forallArity type)
+        toBody (body.instantiate1 fvar) params (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) head args settings arity state typeArgs
+    | mdata _ expr => toBody expr params defs head args settings arity state typeArgs
     | _ => pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head, args := state}
 
   /-- Transalate an `Expr` to a `Tm`, by collecting the `lam` bindings and `app` arguments until a head symbol is reached. -/
-  partial def toTerm (term : Expr) (type : Expr) (insideLet : Nat) (arity : Nat) (params : List Var := []) (defs : List Let := []) (args : List Expr := []) (typeArgs : List Expr := []) : ToCanonicalM Tm := do
+  partial def toTerm (term : Expr) (type : Expr) (settings : Settings) (arity : Nat) (params : List Var := []) (defs : List Let := []) (args : List Expr := []) (typeArgs : List Expr := []) : ToCanonicalM Tm := do
     let term ← whnf term
     let type ← whnf type
     match term, type, args with
-    | _, app fn typeArg, _ => toTerm term fn insideLet arity params defs args (typeArg :: typeArgs)
+    | _, app fn typeArg, _ => toTerm term fn settings arity params defs args (typeArg :: typeArgs)
     | _, lam binderName binderType body _binderInfo, _ =>
       match typeArgs with
       | [] => unreachable!
       | typeArg :: typeArgs => do
         withLetDecl binderName binderType typeArg fun fvar => do
-          let defn ← toTerm typeArg binderType insideLet (← forallArity typeArg)
-          toTerm term (body.instantiate1 fvar) insideLet arity params (⟨← nameString fvar, ← isProp binderType, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
+          let defn ← toTerm typeArg binderType settings (← forallArity typeArg)
+          toTerm term (body.instantiate1 fvar) settings arity params (⟨← nameString fvar, ← isProp binderType, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
     | _, letE declName type value body _, _ =>
       withLetDecl declName type value fun fvar => do
-        let defn ← toTerm value type insideLet (← forallArity type)
-        toTerm term (body.instantiate1 fvar) insideLet arity params (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
-    | _, mdata _ expr, _ => toTerm term expr insideLet arity params defs args typeArgs
+        let defn ← toTerm value type settings (← forallArity type)
+        toTerm term (body.instantiate1 fvar) settings arity params (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
+    | _, mdata _ expr, _ => toTerm term expr settings arity params defs args typeArgs
     | lam binderName binderType body _binderInfo, _, arg :: args =>
       withLetDecl binderName binderType arg fun fvar => do
-        let defn ← toTerm arg binderType insideLet (← forallArity binderType)
-        toTerm (body.instantiate1 fvar) type insideLet arity params (⟨← nameString fvar, ← isProp binderType, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
+        let defn ← toTerm arg binderType settings (← forallArity binderType)
+        toTerm (body.instantiate1 fvar) type settings arity params (⟨← nameString fvar, ← isProp binderType, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
     | letE declName type value body _, _, _ =>
       withLetDecl declName type value fun fvar => do
-        let defn ← toTerm value type insideLet (← forallArity type)
-        toTerm (body.instantiate1 fvar) type insideLet arity params (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
-    | mdata _ expr, _, _ => toTerm expr type insideLet arity params defs args typeArgs
+        let defn ← toTerm value type settings (← forallArity type)
+        toTerm (body.instantiate1 fvar) type settings arity params (⟨← nameString fvar, ← isProp type, #[defRule (← nameString fvar) defn]⟩ :: defs) args typeArgs
+    | mdata _ expr, _, _ => toTerm expr type settings arity params defs args typeArgs
     | lam binderName binderType body binderInfo, forallE _binderName' binderType' body' _binderInfo', [] =>
       withLocalDecl binderName binderInfo binderType fun fvar => do
         match arity with
         | 0 => pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := (``Pi.mk).toString, args := #[
-            ← toTerm binderType' (mkSort .zero) insideLet 0,
-            ← toTerm (body'.instantiate1 fvar) (mkSort .zero) insideLet 1 [⟨← nameString fvar, ← isProp binderType⟩],
-            ← toTerm (body.instantiate1 fvar) (body'.instantiate1 fvar) insideLet 0 [⟨← nameString fvar, ← isProp binderType⟩]
+            ← toTerm binderType' (mkSort .zero) settings 0,
+            ← toTerm (body'.instantiate1 fvar) (mkSort .zero) settings 1 [⟨← nameString fvar, ← isProp binderType⟩],
+            ← toTerm (body.instantiate1 fvar) (body'.instantiate1 fvar) settings 0 [⟨← nameString fvar, ← isProp binderType⟩]
           ]}
-        | n + 1 => toTerm (body.instantiate1 fvar) (body'.instantiate1 fvar) insideLet n (⟨← nameString fvar, ← isProp binderType⟩ :: params) defs args typeArgs
+        | n + 1 => toTerm (body.instantiate1 fvar) (body'.instantiate1 fvar) settings n (⟨← nameString fvar, ← isProp binderType⟩ :: params) defs args typeArgs
     | _, forallE binderName binderType body binderInfo, _ =>
         withLocalDecl binderName binderInfo binderType fun fvar => do
           match arity with
           | 0 => pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := (``Pi.mk).toString, args := #[
-              ← toTerm binderType (mkSort .zero) insideLet 0,
-              ← toTerm (body.instantiate1 fvar) (mkSort .zero) insideLet 0 [⟨← nameString fvar, ← isProp binderType⟩],
-              ← toTerm term (body.instantiate1 fvar) insideLet 0 [⟨← nameString fvar, ← isProp binderType⟩] [] (args ++ [fvar]) []
+              ← toTerm binderType (mkSort .zero) settings 0,
+              ← toTerm (body.instantiate1 fvar) (mkSort .zero) settings 0 [⟨← nameString fvar, ← isProp binderType⟩],
+              ← toTerm term (body.instantiate1 fvar) settings 0 [⟨← nameString fvar, ← isProp binderType⟩] [] (args ++ [fvar]) []
             ]}
-          | n + 1 => toTerm term (body.instantiate1 fvar) insideLet n (⟨← nameString fvar, ← isProp binderType⟩ :: params) defs (args ++ [fvar])
+          | n + 1 => toTerm term (body.instantiate1 fvar) settings n (⟨← nameString fvar, ← isProp binderType⟩ :: params) defs (args ++ [fvar])
     | lam _ _ _ _, const declName _, [] =>
       match (←Lean.getConstInfo declName).value? with
       | none =>
         -- watch out for inifinite loop
-        toTerm term (← withDefault (whnf (mkAppN type typeArgs.toArray))) insideLet arity params defs args
-      | some value => toTerm term value insideLet arity params defs args typeArgs
+        toTerm term (← withDefault (whnf (mkAppN type typeArgs.toArray))) settings arity params defs args
+      | some value => toTerm term value settings arity params defs args typeArgs
     | lam _ _ _ _, _, [] => panic! "hidden behind definition"
     | bvar _, _, _ => unreachable!
     | fvar fvarId, _, _ =>
       let decl := (← MonadLCtx.getLCtx).get! fvarId
-      toBody decl.type params defs (← nameString term) args insideLet (← paramArities decl.type)
+      toBody decl.type params defs (← nameString term) args settings (← paramArities decl.type)
     | mvar mvarId, _, _ =>
       let type ← MVarId.getType mvarId
       modify (·.insert mvarId.name {})
-      toBody type params defs (toString mvarId.name) args insideLet (← paramArities type)
+      toBody type params defs (toString mvarId.name) args settings (← paramArities type)
     | sort _, _, _ => pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := "Sort" }
     | const declName _us, _, _ => do
-      let decl ← define declName insideLet
-      toBody decl.type params defs declName.toString args insideLet (← paramArities decl.type)
-    | app fn arg, _, _ => toTerm fn type insideLet arity params defs (arg :: args) typeArgs
+      let decl ← define declName settings
+      toBody decl.type params defs declName.toString args settings (← paramArities decl.type)
+    | app fn arg, _, _ => toTerm fn type settings arity params defs (arg :: args) typeArgs
     | forallE binderName binderType body binderInfo, _, _ =>
       let bodyLam := mkLambda binderName binderInfo binderType body
-      toTerm (mkAppN (mkConst ``Pi) #[binderType, bodyLam]) type insideLet arity params defs args typeArgs
-    | lit val, _, _ => pure { ← defineLiteral val insideLet with params := ⟨params.reverse⟩, lets := ⟨defs⟩ }
+      toTerm (mkAppN (mkConst ``Pi) #[binderType, bodyLam]) type settings arity params defs args typeArgs
+    | lit val, _, _ => pure { ← defineLiteral val settings with params := ⟨params.reverse⟩, lets := ⟨defs⟩ }
     | proj typeName idx struct, _, _ => do
       let env ← getEnv
       let fields := getStructureFields env typeName
       let structParams := (← withDefault (whnf (← inferType struct))).getAppArgs
       let declName := Option.get! $ getProjFnForField? env typeName fields[idx]!
-      let decl ← define declName insideLet
-      toBody decl.type params defs declName.toString (structParams.toList ++ (struct :: args)) insideLet (← paramArities decl.type)
+      let decl ← define declName settings
+      toBody decl.type params defs declName.toString (structParams.toList ++ (struct :: args)) settings (← paramArities decl.type)
 end
 
 partial def onlyDefinedConsts (e : Expr) (constSet : HashSet Name) : MetaM Bool := do
@@ -506,6 +503,7 @@ partial def onlyDefinedConsts (e : Expr) (constSet : HashSet Name) : MetaM Bool 
       onlyDefinedConsts (body.instantiate1 fvar) constSet
   | forallE binderName binderType body binderInfo => do
     withLocalDecl binderName binderInfo binderType fun fvar => do
+      onlyDefinedConsts binderType constSet <&&>
       onlyDefinedConsts (body.instantiate1 fvar) constSet
   | letE declName type value body _ => do
     withLetDecl declName type value fun fvar => do
@@ -519,6 +517,7 @@ partial def getOrigins (constSet : HashSet Name) (trie : Lean.Meta.DiscrTree.Tri
   | Lean.Meta.DiscrTree.Trie.node vs children =>
     let filtered := children.filter (fun (child : Lean.Meta.DiscrTree.Key × DiscrTree.Trie SimpTheorem) =>
       match child.1 with
+      | Lean.Meta.DiscrTree.Key.proj name _ _
       | Lean.Meta.DiscrTree.Key.const name _ => constSet.contains name
       | Lean.Meta.DiscrTree.Key.arrow => false
       | _ => true
@@ -526,46 +525,47 @@ partial def getOrigins (constSet : HashSet Name) (trie : Lean.Meta.DiscrTree.Tri
     vs.map (·.origin) ++ filtered.flatMap (fun x => getOrigins constSet x.2)
 
 /-- Converts an `Expr` `e` into a Canonical `Typ`, complete with `Definitions` in the `lets`. -/
-def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) : ToCanonicalM Typ := do
+def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) (simp : Bool) : ToCanonicalM Typ := do
+  let settings := { depth := 0, simp }
   (← MonadLCtx.getLCtx).forM fun decl => do if !decl.isAuxDecl then
-    match ← decl.value?.mapM (fun value => do toTerm value decl.type 0 (← forallArity decl.type)) with
+    match ← decl.value?.mapM (fun value => do toTerm value decl.type settings (← forallArity decl.type)) with
     | some term => modify (·.insert (← name decl.toExpr) ⟨none, ← isProp decl.type, #[defRule (← name decl.toExpr).toString term], false, #[]⟩)
-    | none => modify (·.insert (← name decl.toExpr) ⟨some (← toTyp decl.type 0), ← isProp decl.type, #[], false, #[]⟩)
+    | none => modify (·.insert (← name decl.toExpr) ⟨some (← toTyp decl.type settings), ← isProp decl.type, #[], false, #[]⟩)
 
   consts.forM (fun stx => match stx with
     | Syntax.ident _ _ val _ => do
       let names ← Lean.resolveGlobalName val
       if h : names ≠ [] then
-        let _ := ← define (names.getLast h).1 0 true
+        let _ := ← define (names.getLast h).1 settings true
       else
         throwErrorAt stx "Not a constant name:{indentD stx}"
       pure ()
     | stx => throwErrorAt stx "Not an identifier:{indentD stx}"
   )
-  if pi then let _ := ← define ``Canonical.Pi 0 true
+  if pi then let _ := ← define ``Canonical.Pi settings true
 
-  let ⟨paramTypes, defTypes, ⟨params, defs, head, args, _, _⟩⟩ ← toTyp e 0
+  let ⟨paramTypes, defTypes, ⟨params, defs, head, args, _, _⟩⟩ ← toTyp e settings
 
-  let constArray := (← get).toList.toArray
-  let constSet := HashSet.ofArray (constArray.map (·.1))
-  let thms ← getSimpTheorems
-  let tries := constArray.filterMap (fun x =>
-    x.2.type.bind fun typ => thms.post.root.find? (.const x.1 typ.params.size)
-  )
-  let origins := tries.flatMap (getOrigins constSet)
-  let _ ← origins.forM fun origin => do
-    if let .decl name _ _ := origin then
-      dbg_trace name
-      let e := ((← getEnv).find? name |>.get!).type
-      if (← onlyDefinedConsts e constSet) && !(← isRflTheorem name) then
-        let typ ← toTyp e 1
-        if validSimpLemma typ then
-          let rule := eqnRule name.toString typ -- TODO simp has this theorem by default, but [] case.
-          if let some g' := addConstraint rule.lhs rule.rhs (← get) then
-            let c := rule.lhs.head.toName
-            if let some defn := g'.find? c then
-              if !cyclic g' then
-                set (g'.insert c { defn with rules := defn.rules.push rule })
+  if simp then
+    let constArray := (← get).toList.toArray.filter (fun ⟨_, defn⟩ => defn.type.isSome)
+    let constSet := HashSet.ofArray (constArray.map (·.1))
+    let thms ← getSimpTheorems
+    let tries := constArray.filterMap (fun x =>
+      x.2.type.bind fun typ => thms.post.root.find? (.const x.1 typ.params.size)
+    )
+    let origins := tries.flatMap (getOrigins constSet)
+    let _ ← origins.forM fun origin => do
+      if let .decl name _ _ := origin then
+        let e := ((← getEnv).find? name |>.get!).type
+        if (← onlyDefinedConsts e constSet) && !(← isRflTheorem name) then
+          let typ ← toTyp e { depth := 1, simp := false }
+          if validSimpLemma typ then
+            let rule := eqnRule name.toString typ -- TODO simp has this theorem by default, but [] case.
+            if let some g' := addConstraint rule.lhs rule.rhs (← get) then
+              let c := rule.lhs.head.toName
+              if let some defn := g'.find? c then
+                if !cyclic g' then
+                  set (g'.insert c { defn with rules := defn.rules.push rule })
 
   let decls := (← get).toList.toArray.push ⟨Name.mkSimple "Sort", { type := some {codomain := { head := "Sort"}} }⟩
   pure ⟨paramTypes, decls.map (λ ⟨_, t⟩ => t.type) ++ defTypes,
@@ -628,7 +628,7 @@ mutual
             let constName := term.head.toName
             match (← getEnv).find? constName with
             | none =>
-              let name := ((term.head.dropWhile (fun x => x != '?')).drop 1).takeWhile (fun x => x.isAlphanum)
+              let name := ((term.head.dropWhile (fun x => x != ';')).drop 1).takeWhile (fun x => x.isAlphanum)
               mkFreshExprMVar (some (mkAppN type typeArgs.toArray)) (userName := name.toName)
             | some decl => toApp decl.type (mkConst constName (←mvarLevels decl.numLevelParams)) term.args.toList 0 []
         | some fvarId => toApp ((← MonadLCtx.getLCtx).get! fvarId).type (mkFVar fvarId) term.args.toList 0 []
@@ -697,6 +697,7 @@ structure CanonicalConfig where
   debug: Bool := false
   /-- Opens the refinement UI. -/
   refine: Bool := false
+  simp: Bool := true
 
 declare_config_elab canonicalConfig CanonicalConfig
 
@@ -781,7 +782,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
     let config ← canonicalConfig config
 
     let goal ← getMainTarget
-    let type ← toCanonical goal argList config.pi |>.run' default
+    let type ← toCanonical goal argList config.pi config.simp |>.run' default
 
     let lctx ← MonadLCtx.getLCtx
     let map ← lctx.foldlM (fun map decl => do
@@ -806,7 +807,10 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
     | none => 10
 
     if config.debug then
+      Elab.admitGoal (← getMainGoal)
       dbg_trace type
+      return
+
     Core.checkInterrupted
     let task ← IO.asTask (prio := Task.Priority.dedicated)
       (canonical type (UInt64.ofNat timeout) config.count config.debug)

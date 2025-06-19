@@ -15,6 +15,8 @@ export default function(props) {
         optionBackground: style.getPropertyValue('--vscode-list-hoverBackground'),
         listHover: style.getPropertyValue('--vscode-inputOption-activeBackground'),
         listBorder: style.getPropertyValue('--vscode-input-border'),
+        infoBackground: style.getPropertyValue('--vscode-button-secondaryBackground'),
+        infoSeparator: style.getPropertyValue('--vscode-input-border')
         };
         const isDark = document.body.classList.contains('vscode-dark');
         iframeRef.current?.contentWindow?.postMessage({ type: 'theme', vars, isDark: isDark }, '*');
