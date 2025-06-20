@@ -301,6 +301,7 @@ mutual
             pure (eqnRule (if ← Lean.Meta.isRflTheorem eqn then none else some eqn.toString) type)
         else match env.getProjectionFnInfo? declName with
           | some info =>
+            let _ ← define info.ctorName settings
             pure #[projRule declName.toString info (info.ctorName.toString) (← getConstInfoCtor info.ctorName) (← forallArity decl.type)]
           | none => match decl with
             | .recInfo info => do
