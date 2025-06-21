@@ -10,12 +10,6 @@ structure Var where
 deriving Inhabited
 
 mutual
-  structure Rule where
-    lhs: Tm
-    rhs: Tm
-    name: Option String
-    isRedex: Bool
-
   /-- A let declaration, with a name and value. -/
   structure Let where
     name: String
@@ -33,6 +27,13 @@ mutual
 
     premiseRules: Array String := #[]
     goalRules: Array String := #[]
+  deriving Inhabited
+
+  structure Rule where
+    lhs: Tm
+    rhs: Tm
+    name: Option String
+    isRedex: Bool
   deriving Inhabited
 end
 
@@ -85,7 +86,10 @@ structure HardCode where
     the definitions introduced by a given symbol. -/
 def HARD_CODE : HashMap (Name × Name) HardCode := .ofList [
     ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], []⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.zero_add, `Nat.succ_add]⟩⟩
+    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.zero_add, `Nat.succ_add, `Nat.add_assoc]⟩⟩, -- Nat.succ.injEq is an equation on Eq
+    ⟨⟨`Init.Prelude, `Nat.mul⟩, ⟨[], [`Nat.mul_zero, `Nat.zero_mul, `Nat.succ_mul, `Nat.mul_succ, `Nat.mul_assoc, `Nat.mul_add, `Nat.add_mul]⟩⟩,
+    ⟨⟨`Init.Prelude, `Nat.pow⟩, ⟨[], [`Nat.pow_zero, `Nat.pow_succ, `Nat.pow_add, `Nat.mul_pow]⟩⟩,
+    ⟨⟨`Init.Prelude, `Nat.le⟩, ⟨[`Nat.le.refl, `Nat.le.step], [`Nat.le_zero_eq]⟩⟩ -- succ_le_succ
   ]
 
 def getHardCode (name : Name) : CoreM (Option HardCode) := do
@@ -138,18 +142,6 @@ partial def count (t : Tm) (v : String) : Nat :=
 partial def containsLambda (t : Tm) : Bool :=
   if t.params.isEmpty then
     t.args.any containsLambda
-  else true
-
-/-- Not a complete test. TODO Filter out isRflTheorem -/
-def validSimpLemma (typ : Typ) : Bool :=
-  if typ.codomain.head != "Eq" then
-     false -- not an equality
-  else if typ.params.any (fun x => !x.get!.params.isEmpty) then
-    false -- higher order
-  else if typ.codomain.params.any (fun x => count typ.codomain.args[1]! x.name != 1) then
-    false -- unbound or overused variable
-  else if containsLambda typ.codomain.args[1]! then
-    false -- potentially requires fvars do not use the lambda
   else true
 
 /- def print_force (s : String) : IO Unit := do
@@ -241,11 +233,27 @@ def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (construc
   let fieldArgs : Array Tm := Array.ofFn (fun (i : Fin (arity - projInfo.numParams - 1)) => { head := "arg" ++ toString i.val })
   let args : Array Tm := ((Array.replicate projInfo.numParams { head := "*"}).push { head := constructor, args := ctorArgs }) ++ fieldArgs
   ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, none, true⟩
+  -- ⟨typ.codomain.args[1]!, typ.codomain.args[2]!, attribution, true⟩
 
-def eqnRule (attribution : Option String) (typ : Typ) : Rule :=
-  ⟨typ.codomain.args[1]!, typ.codomain.args[2]!, attribution, true⟩
+/-- Not a complete test. TODO Filter out isRflTheorem -/
+def validSimpLemma (xs : Array Expr) (rule : Rule) : MetaM Bool := do
+  if ← xs.anyM (fun x => do pure ((← forallArity (← x.fvarId!.getType)) != 0)) then
+    pure false -- higher order
+  else if ← xs.anyM (fun x => do pure (count rule.lhs (← nameString x) != 1)) then
+    pure false -- unbound or overused variable
+  else if containsLambda rule.lhs then
+    pure false -- potentially requires fvars do not use the lambda
+  else pure true
 
 mutual
+  partial def eqnRule (attribution : Option String) (e : Expr) (settings : Settings) : ToCanonicalM (Option (Bool × Rule)) :=
+    forallTelescopeReducing e fun xs e =>
+      ((eq? e).mapM fun ⟨typ, lhs, rhs⟩ => do
+        forallTelescopeReducing typ fun txs typ => do
+          let rule := ⟨← toTerm lhs typ settings 0 [] [] txs.toList [], ← toTerm rhs typ settings 0 [] [] txs.toList [], attribution, true⟩
+          pure ⟨← validSimpLemma (xs ++ txs) rule, rule⟩
+      )
+
   /-- At present, only small natural numbers are converted into a `Tm`. Other literals are `opaque`. -/
   partial def defineLiteral (val : Literal) (settings : Settings) : ToCanonicalM Tm := do
     match val with
@@ -276,16 +284,10 @@ mutual
       modify (·.insert declName {})
 
       let defineType := force || (settings.depth == 0 && !Lean.isClass env declName && ((env.getProjectionFnInfo? declName).isSome || (← includeType decl)))
-      let type ← if defineType then pure (some (← toTyp decl.type settings)) else pure none
 
-      let irrelevant ← match decl with
-      | .recInfo _ => pure false
-      | _ => pure ((!Lean.isAuxRecursor env decl.name) && isProp decl.type)
-
-      if settings.simp then
-        if let some type := type then
-          if validSimpLemma type && !(← isRflTheorem decl.name) then
-            let rule := eqnRule decl.name.toString type
+      if settings.simp && defineType then
+        if let some ⟨valid, rule⟩ := ← eqnRule decl.name.toString decl.type settings then
+          if valid && !(← isRflTheorem decl.name) then
             if let some g' := addConstraint rule.lhs rule.rhs (← get) then
               let c := rule.lhs.head.toName
               if let some defn := g'.find? c then
@@ -293,12 +295,17 @@ mutual
                   set (g'.insert c { defn with rules := defn.rules.push rule })
                   return decl
 
+      let type ← if defineType then pure (some (← toTyp decl.type settings)) else pure none
+
+      let irrelevant ← match decl with
+      | .recInfo _ => pure false
+      | _ => pure ((!Lean.isAuxRecursor env decl.name) && isProp decl.type)
+
       let rules ← if ← Lean.isIrreducible declName then pure #[] else
         if let some hard_code ← getHardCode declName then
           hard_code.define.forM fun name => do let _ ← define name settings
           hard_code.rules.toArray.mapM fun eqn => do
-            let type ← toTyp (← getConstInfo eqn).type settings
-            pure (eqnRule (if ← Lean.Meta.isRflTheorem eqn then none else some eqn.toString) type)
+            pure ((← eqnRule eqn.toString (← getConstInfo eqn).type settings).get!.2)
         else match env.getProjectionFnInfo? declName with
           | some info =>
             let _ ← define info.ctorName settings
@@ -318,8 +325,7 @@ mutual
             | .defnInfo info =>
               if let some eqns ← getEqnsFor? declName then
                 eqns.mapM fun eqn => do
-                  let type ← toTyp (← getConstInfo eqn).type settings
-                  pure (eqnRule eqn.toString type)
+                  pure (← eqnRule eqn.toString (← getConstInfo eqn).type settings).get!.2
               else
                 let defn ← toTerm info.value decl.type
                   { settings with depth := settings.depth + (if ← includeLetType info.value then 1 else 0) }
@@ -559,14 +565,13 @@ def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) (simp : Bool) : To
       if let .decl name _ _ := origin then
         let e := ((← getEnv).find? name |>.get!).type
         if (← onlyDefinedConsts e constSet) && !(← isRflTheorem name) then
-          let typ ← toTyp e { depth := 1, simp := false }
-          if validSimpLemma typ then
-            let rule := eqnRule name.toString typ -- TODO simp has this theorem by default, but [] case.
-            if let some g' := addConstraint rule.lhs rule.rhs (← get) then
-              let c := rule.lhs.head.toName
-              if let some defn := g'.find? c then
-                if !cyclic g' then
-                  set (g'.insert c { defn with rules := defn.rules.push rule })
+          if let some ⟨valid, rule⟩ ← eqnRule name.toString e { depth := 1, simp := false } then
+            if valid then
+              if let some g' := addConstraint rule.lhs rule.rhs (← get) then
+                let c := rule.lhs.head.toName
+                if let some defn := g'.find? c then
+                  if !cyclic g' then
+                    set (g'.insert c { defn with rules := defn.rules.push rule })
 
   let decls := (← get).toList.toArray.push ⟨Name.mkSimple "Sort", { type := some {codomain := { head := "Sort"}} }⟩
   pure ⟨paramTypes, decls.map (λ ⟨_, t⟩ => t.type) ++ defTypes,
