@@ -60,14 +60,16 @@ instance : ToString Tm where toString := termToString
 @[never_extract, extern "typ_to_string"] opaque typToString: @& Typ → String
 instance : ToString Typ where toString := typToString
 
-/-- Generate terms of a given type, with given timeout, desired count, `synth` and `debug` flags -/
-@[never_extract, extern "canonical"] opaque canonical : @& Typ → UInt64 → USize → Bool → IO CanonicalResult
+/-- Generate terms of a given type, with given timeout and desired count. -/
+@[never_extract, extern "canonical"] opaque canonical : @& Typ → UInt64 → USize → IO CanonicalResult
 
 /-- Start a server with the refinement UI on the given type. -/
 @[never_extract, extern "refine"] opaque refine : @& Typ → IO Unit
 
 /-- Obtains the current term from the refinement UI. -/
 @[never_extract, extern "get_refinement"] opaque getRefinement : IO Tm
+
+@[never_extract, extern "save_to_file"] opaque save_to_file : @& Typ → String → IO Unit
 
 /-- Some Lean Π-types cannot be converted into Canonical Π-types,
     and are instead converted into this structure. -/
@@ -90,7 +92,7 @@ def HARD_CODE : HashMap (Name × Name) HardCode := .ofList [
     ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.zero_add, `Nat.succ_add, `Nat.add_assoc], [`Nat.add_eq]⟩⟩, -- Nat.succ.injEq is an equation on Eq
     ⟨⟨`Init.Prelude, `Nat.mul⟩, ⟨[], [`Nat.mul_zero, `Nat.zero_mul, `Nat.succ_mul, `Nat.mul_succ, `Nat.mul_assoc, `Nat.mul_add, `Nat.add_mul], [`Nat.mul_eq]⟩⟩,
     ⟨⟨`Init.Prelude, `Nat.pow⟩, ⟨[], [`Nat.pow_zero, `Nat.pow_succ, `Nat.pow_add, `Nat.mul_pow], [`Nat.pow_eq]⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.le⟩, ⟨[`Nat.le.refl, `Nat.le.step], [`Nat.le_zero_eq], []⟩⟩ -- succ_le_succ
+    ⟨⟨`Init.Prelude, `Nat.le⟩, ⟨[`Nat.le.refl, `Nat.le.step], [`Nat.le_zero_eq], [`Nat.le_eq]⟩⟩ -- succ_le_succ
   ]
 
 def getHardCode (name : Name) : CoreM (Option HardCode) := do
@@ -295,7 +297,9 @@ mutual
     let decl := env.find? declName |>.get!
 
     if shouldDefine then
-      modify (·.insert declName {})
+      modify (fun x =>
+        x.insert declName (((x.find? declName).map (fun defn => { defn with shouldReplace := false })).getD {})
+      )
 
       let defineType := force || (settings.depth == 0 && !Lean.isClass env declName && ((env.getProjectionFnInfo? declName).isSome || (← includeType decl)))
 
@@ -340,9 +344,8 @@ mutual
               modify (fun x =>
                 let defn := (x.find? `Eq).get!
                 let defn := { defn with rules := defn.rules ++ rules }
-                x.replace `Eq defn
+                (addConstraints rules (x.replace `Eq defn)).get!
               )
-              modify (fun x => (addConstraints rules x).get!)
 
               match getStructureInfo? env declName with
               | some info => info.fieldInfo.forM fun field => do let _ ← define field.projFn settings
@@ -361,9 +364,11 @@ mutual
               pure #[]
 
 
-
-      modify (·.insert declName ⟨type, irrelevant, rules, settings.depth > 0, #[]⟩)
-      modify (fun x => (addConstraints rules x).get!)
+      modify (fun x =>
+        let defn := (x.find? decl.name).get!
+        let defn := { defn with type := type, irrelevant := irrelevant, rules := defn.rules ++ rules, shouldReplace := settings.depth > 0 }
+        (addConstraints rules (x.replace decl.name defn)).get!
+      )
     pure decl
 
   /-- Translate an `Expr` into a `Typ`, by collecting the `forallE` bindings and `app` arguments until a head symbol is reached.  -/
@@ -555,7 +560,7 @@ partial def getOrigins (constSet : HashSet Name) (trie : Lean.Meta.DiscrTree.Tri
       | Lean.Meta.DiscrTree.Key.arrow => false
       | _ => true
     )
-    vs.map (·.origin) ++ filtered.flatMap (fun x => getOrigins constSet x.2)
+    (vs.filterMap (fun x => if x.priority ≥ eval_prio default then some x.origin else none)) ++ filtered.flatMap (fun x => getOrigins constSet x.2)
 
 /-- Converts an `Expr` `e` into a Canonical `Typ`, complete with `Definitions` in the `lets`. -/
 def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) (simp : Bool) : ToCanonicalM Typ := do
@@ -843,12 +848,13 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
 
     if config.debug then
       Elab.admitGoal (← getMainGoal)
+      let _ ← save_to_file type "debug.json"
       dbg_trace type
       return
 
     Core.checkInterrupted
     let task ← IO.asTask (prio := Task.Priority.dedicated)
-      (canonical type (UInt64.ofNat timeout) config.count config.debug)
+      (canonical type (UInt64.ofNat timeout) config.count)
     while !(← IO.hasFinished task) do
       if ← checkInterrupted then
         IO.cancel task
