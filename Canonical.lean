@@ -32,7 +32,7 @@ mutual
   structure Rule where
     lhs: Tm
     rhs: Tm
-    name: Option String
+    attribution: Array String
     isRedex: Bool
   deriving Inhabited
 end
@@ -81,15 +81,16 @@ open Std Lean Elab.Tactic Expr Meta
 structure HardCode where
   define: List Name
   rules: List Name
+  simpnf: List Name
 
 /-- Rather than recursively unfolding definitions, `HARD_CODE` overrides
     the definitions introduced by a given symbol. -/
 def HARD_CODE : HashMap (Name × Name) HardCode := .ofList [
-    ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], []⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.zero_add, `Nat.succ_add, `Nat.add_assoc]⟩⟩, -- Nat.succ.injEq is an equation on Eq
-    ⟨⟨`Init.Prelude, `Nat.mul⟩, ⟨[], [`Nat.mul_zero, `Nat.zero_mul, `Nat.succ_mul, `Nat.mul_succ, `Nat.mul_assoc, `Nat.mul_add, `Nat.add_mul]⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.pow⟩, ⟨[], [`Nat.pow_zero, `Nat.pow_succ, `Nat.pow_add, `Nat.mul_pow]⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.le⟩, ⟨[`Nat.le.refl, `Nat.le.step], [`Nat.le_zero_eq]⟩⟩ -- succ_le_succ
+    ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], [], []⟩⟩,
+    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.zero_add, `Nat.succ_add, `Nat.add_assoc], [`Nat.add_eq]⟩⟩, -- Nat.succ.injEq is an equation on Eq
+    ⟨⟨`Init.Prelude, `Nat.mul⟩, ⟨[], [`Nat.mul_zero, `Nat.zero_mul, `Nat.succ_mul, `Nat.mul_succ, `Nat.mul_assoc, `Nat.mul_add, `Nat.add_mul], [`Nat.mul_eq]⟩⟩,
+    ⟨⟨`Init.Prelude, `Nat.pow⟩, ⟨[], [`Nat.pow_zero, `Nat.pow_succ, `Nat.pow_add, `Nat.mul_pow], [`Nat.pow_eq]⟩⟩,
+    ⟨⟨`Init.Prelude, `Nat.le⟩, ⟨[`Nat.le.refl, `Nat.le.step], [`Nat.le_zero_eq], []⟩⟩ -- succ_le_succ
   ]
 
 def getHardCode (name : Name) : CoreM (Option HardCode) := do
@@ -217,7 +218,7 @@ def includeType (info : ConstantInfo) : ToCanonicalM Bool := do
   | _ => pure true
 
 def defRule (name : String) (defn : Tm) : Rule :=
-  ⟨{ head := name, args := defn.params.map (fun p => { head := p.name }) }, { defn with params := #[]}, none, false⟩
+  ⟨{ head := name, args := defn.params.map (fun p => { head := p.name }) }, { defn with params := #[]}, #[], false⟩
 
 def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (constructorVal : ConstructorVal) (rhs : Tm) : Rule :=
   let ctorStart := (recVal.numParams+recVal.numMotives+recVal.numMinors);
@@ -226,13 +227,13 @@ def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (const
   let major : Tm := { head := constructor.toString, args := Array.replicate constructorVal.numParams { head := "*" } ++ ctorArgs}
   let args : Array Tm := (args ++ Array.replicate recVal.numIndices ({ head := "*" } : Tm)).push major
   let args := args ++ (rhs.params.toSubarray (ctorStart + constructorVal.numFields)).toArray.map (fun p => { head := p.name })
-  ⟨{head := recursor.toString, args := args }, { rhs with params := #[] }, none, true⟩
+  ⟨{head := recursor.toString, args := args }, { rhs with params := #[] }, #[], true⟩
 
 def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (constructor : String) (constructorVal : ConstructorVal) (arity : Nat) : Rule :=
   let ctorArgs : Array Tm := (Array.replicate (constructorVal.numParams + constructorVal.numFields) { head := "*" }).set! (constructorVal.numParams + projInfo.i) { head := "field" }
   let fieldArgs : Array Tm := Array.ofFn (fun (i : Fin (arity - projInfo.numParams - 1)) => { head := "arg" ++ toString i.val })
   let args : Array Tm := ((Array.replicate projInfo.numParams { head := "*"}).push { head := constructor, args := ctorArgs }) ++ fieldArgs
-  ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, none, true⟩
+  ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, #[], true⟩
   -- ⟨typ.codomain.args[1]!, typ.codomain.args[2]!, attribution, true⟩
 
 /-- Not a complete test. TODO Filter out isRflTheorem -/
@@ -246,7 +247,7 @@ def validSimpLemma (xs : Array Expr) (rule : Rule) : MetaM Bool := do
   else pure true
 
 mutual
-  partial def eqnRule (attribution : Option String) (e : Expr) (settings : Settings) : ToCanonicalM (Option (Bool × Rule)) :=
+  partial def eqnRule (attribution : Array String) (e : Expr) (settings : Settings) : ToCanonicalM (Option (Bool × Rule)) :=
     forallTelescopeReducing e fun xs e =>
       ((eq? e).mapM fun ⟨typ, lhs, rhs⟩ => do
         forallTelescopeReducing typ fun txs typ => do
@@ -286,7 +287,7 @@ mutual
       let defineType := force || (settings.depth == 0 && !Lean.isClass env declName && ((env.getProjectionFnInfo? declName).isSome || (← includeType decl)))
 
       if settings.simp && defineType then
-        if let some ⟨valid, rule⟩ := ← eqnRule decl.name.toString decl.type settings then
+        if let some ⟨valid, rule⟩ := ← eqnRule #[decl.name.toString] decl.type settings then
           if valid && !(← isRflTheorem decl.name) then
             if let some g' := addConstraint rule.lhs rule.rhs (← get) then
               let c := rule.lhs.head.toName
@@ -304,8 +305,9 @@ mutual
       let rules ← if ← Lean.isIrreducible declName then pure #[] else
         if let some hard_code ← getHardCode declName then
           hard_code.define.forM fun name => do let _ ← define name settings
+          let simpnf := (hard_code.simpnf.map toString).toArray
           hard_code.rules.toArray.mapM fun eqn => do
-            pure ((← eqnRule eqn.toString (← getConstInfo eqn).type settings).get!.2)
+            pure ((← eqnRule (simpnf.push eqn.toString) (← getConstInfo eqn).type settings).get!.2)
         else match env.getProjectionFnInfo? declName with
           | some info =>
             let _ ← define info.ctorName settings
@@ -325,7 +327,7 @@ mutual
             | .defnInfo info =>
               if let some eqns ← getEqnsFor? declName then
                 eqns.mapM fun eqn => do
-                  pure (← eqnRule eqn.toString (← getConstInfo eqn).type settings).get!.2
+                  pure (← eqnRule #[eqn.toString] (← getConstInfo eqn).type settings).get!.2
               else
                 let defn ← toTerm info.value decl.type
                   { settings with depth := settings.depth + (if ← includeLetType info.value then 1 else 0) }
@@ -565,7 +567,7 @@ def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) (simp : Bool) : To
       if let .decl name _ _ := origin then
         let e := ((← getEnv).find? name |>.get!).type
         if (← onlyDefinedConsts e constSet) && !(← isRflTheorem name) then
-          if let some ⟨valid, rule⟩ ← eqnRule name.toString e { depth := 1, simp := false } then
+          if let some ⟨valid, rule⟩ ← eqnRule #[name.toString] e { depth := 1, simp := false } then
             if valid then
               if let some g' := addConstraint rule.lhs rule.rhs (← get) then
                 let c := rule.lhs.head.toName
@@ -594,12 +596,12 @@ def toSyntax (premiseRules: Array String) (goalRules: Array String) : Syntax := 
   let goalRules := goalRules.toList.toSSet.toList.toArray
   let result ← if premiseRules.isEmpty then `(tacticSeq| exact $(TSyntax.mk .missing)) else
     let cc : Array (TSyntax `ident) := premiseRules.map (fun s => mkIdent s.toName)
-    `(tacticSeq| simpa [$[$cc:ident],*] using $(TSyntax.mk .missing))
+    `(tacticSeq| simpa only [$[$cc:ident],*] using $(TSyntax.mk .missing))
   let result ← if goalRules.isEmpty then
     `(term| by $result)
   else do
     let cc : Array (TSyntax `ident) := goalRules.map (fun s => mkIdent s.toName)
-    `(term| by simp [$[$cc:ident],*] <;> $(TSyntax.mk result))
+    `(term| by simp only [$[$cc:ident],*] <;> $(TSyntax.mk result))
   pure result
 
 mutual
@@ -621,8 +623,11 @@ mutual
       withLetDecl binderName binderType value fun fvar =>
         toLam (body.instantiate1 fvar) term typeArgs paramIndex
     | _ =>
-      if (!term.premiseRules.isEmpty || !term.goalRules.isEmpty) then
-        return .mdata (KVMap.empty.insert `canonical (.ofSyntax (toSyntax term.premiseRules term.goalRules)))
+      let premiseRules := if ← term.premiseRules.allM (fun s => do isRflTheorem s.toName) then #[] else term.premiseRules
+      let goalRules := if ← term.goalRules.allM (fun s => do isRflTheorem s.toName) then #[] else term.goalRules
+
+      if (!premiseRules.isEmpty || !goalRules.isEmpty) then
+        return .mdata (KVMap.empty.insert `canonical (.ofSyntax (toSyntax premiseRules goalRules)))
           (←toLam type { term with premiseRules := #[], goalRules := #[] } typeArgs paramIndex)
 
       do match (←get).find? term.head with
