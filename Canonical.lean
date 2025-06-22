@@ -71,6 +71,8 @@ instance : ToString Typ where toString := typToString
 
 @[never_extract, extern "save_to_file"] opaque save_to_file : @& Typ → String → IO Unit
 
+instance : ToString Rule where toString := fun r => s!"{r.lhs} ↦ {r.rhs}"
+
 /-- Some Lean Π-types cannot be converted into Canonical Π-types,
     and are instead converted into this structure. -/
 structure Pi (A : Type u) (B : A → Type v) where
@@ -92,7 +94,8 @@ def HARD_CODE : HashMap (Name × Name) HardCode := .ofList [
     ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.zero_add, `Nat.succ_add, `Nat.add_assoc], [`Nat.add_eq]⟩⟩, -- Nat.succ.injEq is an equation on Eq
     ⟨⟨`Init.Prelude, `Nat.mul⟩, ⟨[], [`Nat.mul_zero, `Nat.zero_mul, `Nat.succ_mul, `Nat.mul_succ, `Nat.mul_assoc, `Nat.mul_add, `Nat.add_mul], [`Nat.mul_eq]⟩⟩,
     ⟨⟨`Init.Prelude, `Nat.pow⟩, ⟨[], [`Nat.pow_zero, `Nat.pow_succ, `Nat.pow_add, `Nat.mul_pow], [`Nat.pow_eq]⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.le⟩, ⟨[`Nat.le.refl, `Nat.le.step], [`Nat.le_zero_eq], [`Nat.le_eq]⟩⟩ -- succ_le_succ
+    ⟨⟨`Init.Prelude, `Nat.le⟩, ⟨[`Nat.le.refl, `Nat.le.step], [`Nat.le_zero_eq], [`Nat.le_eq]⟩⟩, -- succ_le_succ
+    ⟨⟨`Init.Prelude, `Nat.ble⟩, ⟨[], [``Nat.ble.eq_2, ``Nat.ble.eq_3, ``Nat.ble.eq_4], []⟩⟩,
   ]
 
 def getHardCode (name : Name) : CoreM (Option HardCode) := do
@@ -121,7 +124,7 @@ private partial def cyclicHelper (g : AssocList Name Definition) (u : Name)
     pure false
   else
     modify (·.insert u)
-    (g.find? u).get!.neighbors.anyM (λ v => cyclicHelper g v (stack.insert u))
+    ((g.find? u).getD (panic! "cyclicHelper node not in graph.")).neighbors.anyM (λ v => cyclicHelper g v (stack.insert u))
 
 def cyclic (g : AssocList Name Definition) : Bool :=
   (g.toList.anyM (λ (⟨u, _⟩ : Name × Definition) => cyclicHelper g u {})).run' {}
@@ -207,7 +210,7 @@ def includeLetType (expr : Expr) : ToCanonicalM Bool := do
   | app fn arg => includeLetType fn <||> includeLetType arg
   | lam _ _ body _ | forallE _ _ body _ | letE _ _ _ body _ | mdata _ body => includeLetType body
   | const declName _ =>
-    let decl := (← getEnv).find? declName |>.get!
+    let decl := ((← getEnv).find? declName).getD (panic! "includeLetType: constant not found")
     isOpaque decl
   | _ => pure false
 
@@ -294,7 +297,7 @@ mutual
     | none => settings.depth < 3
 
     let env ← getEnv
-    let decl := env.find? declName |>.get!
+    let decl := (env.find? declName).getD (panic! s!"define: constant {declName} not found")
 
     if shouldDefine then
       modify (fun x =>
@@ -324,7 +327,7 @@ mutual
           hard_code.define.forM fun name => do let _ ← define name settings
           let simpnf := (hard_code.simpnf.map toString).toArray
           hard_code.rules.toArray.mapM fun eqn => do
-            pure ((← eqnRule (simpnf.push eqn.toString) (← getConstInfo eqn).type settings).get!.2)
+            pure (((← eqnRule (simpnf.push eqn.toString) (← getConstInfo eqn).type settings).getD (panic! "invalid hard code rule")).2)
         else match env.getProjectionFnInfo? declName with
           | some info =>
             let _ ← define info.ctorName settings
@@ -342,9 +345,9 @@ mutual
               let _ ← define `Eq { depth := 1, simp := false }
               let rules ← reduceCtorEqRules decl.name info
               modify (fun x =>
-                let defn := (x.find? `Eq).get!
+                let defn := (x.find? `Eq).getD (panic! "define: Eq not found after defining")
                 let defn := { defn with rules := defn.rules ++ rules }
-                (addConstraints rules (x.replace `Eq defn)).get!
+                (addConstraints rules (x.replace `Eq defn)).getD (panic! "define: ctorEqRules nonterminating")
               )
 
               match getStructureInfo? env declName with
@@ -352,9 +355,13 @@ mutual
               | none => let _ ← define (mkRecName declName) settings
               pure #[]
             | .defnInfo info =>
-              if let some eqns ← getEqnsFor? declName then
+              if ← isMatcher declName then
+                let eqns ← Match.getEquationsFor declName
+                eqns.eqnNames.mapM fun eqn => do
+                  pure ((← eqnRule #[eqn.toString] (← getConstInfo eqn).type settings).getD (panic! "invalid equation compiler rule")).2
+              else if let some eqns ← getEqnsFor? declName then
                 eqns.mapM fun eqn => do
-                  pure (← eqnRule #[eqn.toString] (← getConstInfo eqn).type settings).get!.2
+                  pure ((← eqnRule #[eqn.toString] (← getConstInfo eqn).type settings).getD (panic! "invalid equation compiler rule")).2
               else
                 let defn ← toTerm info.value decl.type
                   { settings with depth := settings.depth + (if ← includeLetType info.value then 1 else 0) }
@@ -363,11 +370,10 @@ mutual
             | _ =>
               pure #[]
 
-
       modify (fun x =>
-        let defn := (x.find? decl.name).get!
+        let defn := (x.find? decl.name).getD (panic! "define: definition not found after defining")
         let defn := { defn with type := type, irrelevant := irrelevant, rules := defn.rules ++ rules, shouldReplace := settings.depth > 0 }
-        (addConstraints rules (x.replace decl.name defn)).get!
+        (addConstraints rules (x.replace decl.name defn)).getD (panic! "define: rules nonterminating")
       )
     pure decl
 
@@ -485,7 +491,7 @@ mutual
             ← toTerm binderType' (mkSort .zero) settings 0,
             ← toTerm (body'.instantiate1 fvar) (mkSort .zero) settings 1 [⟨← nameString fvar, ← isProp binderType⟩],
             ← toTerm (body.instantiate1 fvar) (body'.instantiate1 fvar) settings 0 [⟨← nameString fvar, ← isProp binderType⟩]
-          ]}
+          ]} -- TODO fvar should always register as arity 1.
         | n + 1 => toTerm (body.instantiate1 fvar) (body'.instantiate1 fvar) settings n (⟨← nameString fvar, ← isProp binderType⟩ :: params) defs args typeArgs
     | _, forallE binderName binderType body binderInfo, _ =>
         withLocalDecl binderName binderInfo binderType fun fvar => do
@@ -594,7 +600,7 @@ def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) (simp : Bool) : To
     let origins := tries.flatMap (getOrigins constSet)
     let _ ← origins.forM fun origin => do
       if let .decl name _ _ := origin then
-        let e := ((← getEnv).find? name |>.get!).type
+        let e := ((← getEnv).find? name |>.getD (panic! s!"simp lemma {name} does not exist.")).type
         if (← onlyDefinedConsts e constSet) && !(← isRflTheorem name) then
           if let some ⟨valid, rule⟩ ← eqnRule #[name.toString] e { depth := 1, simp := false } then
             if valid then
@@ -832,7 +838,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
       let _ ← refine type
       Elab.admitGoal (← getMainGoal)
       let fileMap ← getFileMap
-      let strRange := (← getRef).getRange?.get!
+      let strRange := (← getRef).getRange?.getD (panic! "No range found!")
       let range := fileMap.utf8RangeToLspRange strRange
       let width := Lean.Meta.Tactic.TryThis.getInputWidth (← getOptions)
       let (indent, column) := Lean.Meta.Tactic.TryThis.getIndentAndColumn fileMap strRange
