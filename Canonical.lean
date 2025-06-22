@@ -234,7 +234,20 @@ def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (construc
   let fieldArgs : Array Tm := Array.ofFn (fun (i : Fin (arity - projInfo.numParams - 1)) => { head := "arg" ++ toString i.val })
   let args : Array Tm := ((Array.replicate projInfo.numParams { head := "*"}).push { head := constructor, args := ctorArgs }) ++ fieldArgs
   ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, #[], true⟩
-  -- ⟨typ.codomain.args[1]!, typ.codomain.args[2]!, attribution, true⟩
+
+def reduceCtorEqRules (ind : Name) (info : InductiveVal) : MetaM (Array Rule) := do
+  let mut rules := #[]
+  for ctor1 in info.ctors do
+    for ctor2 in info.ctors do
+      if ctor1 != ctor2 then
+        let info1 ← getConstInfoCtor ctor1
+        let info2 ← getConstInfoCtor ctor2
+        rules := rules.push ⟨{ head := "Eq", args := #[
+          { head := ind.toString },
+          { head := ctor1.toString, args := Array.replicate (info1.numFields + info.numParams + info.numIndices) { head := "*" } },
+          { head := ctor2.toString, args := Array.replicate (info2.numFields + info.numParams + info.numIndices) { head := "*" } }
+        ] }, { head := "False" }, #["reduceCtorEq"], true⟩
+  pure rules
 
 /-- Not a complete test. TODO Filter out isRflTheorem -/
 def validSimpLemma (xs : Array Expr) (rule : Rule) : MetaM Bool := do
@@ -320,6 +333,17 @@ mutual
                 pure (recRule declName info r.ctor (← getConstInfoCtor r.ctor) term))
             | .inductInfo info =>
               info.ctors.forM fun ctor => do let _ ← define ctor settings
+
+              let _ ← define `False { depth := 1, simp := false }
+              let _ ← define `Eq { depth := 1, simp := false }
+              let rules ← reduceCtorEqRules decl.name info
+              modify (fun x =>
+                let defn := (x.find? `Eq).get!
+                let defn := { defn with rules := defn.rules ++ rules }
+                x.replace `Eq defn
+              )
+              modify (fun x => (addConstraints rules x).get!)
+
               match getStructureInfo? env declName with
               | some info => info.fieldInfo.forM fun field => do let _ ← define field.projFn settings
               | none => let _ ← define (mkRecName declName) settings
