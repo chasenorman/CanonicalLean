@@ -10,7 +10,7 @@ structure Var where
 deriving Inhabited
 
 mutual
-  /-- A let declaration, with a name and value. -/
+  /-- A let declaration, with a name, value and reduction rules. -/
   structure Let where
     name: String
     irrelevant: Bool
@@ -25,10 +25,16 @@ mutual
     head: String
     args: Array Tm := #[]
 
+    /- For proof reconstruction, the reduction rules that were
+       used to unify the premise with the goal. -/
     premiseRules: Array String := #[]
     goalRules: Array String := #[]
   deriving Inhabited
 
+  /-- A reduction rule `lhs ↦ rhs`. The `attribution` will be added
+      to the `premiseRules` or `goalRules` arrays where used.
+      Canonical will not return a term that reduces according to
+      a rule that `isRedex`. -/
   structure Rule where
     lhs: Tm
     rhs: Tm
@@ -69,6 +75,7 @@ instance : ToString Typ where toString := typToString
 /-- Obtains the current term from the refinement UI. -/
 @[never_extract, extern "get_refinement"] opaque getRefinement : IO Tm
 
+/-- Saves a JSON representation of the type to the given file. -/
 @[never_extract, extern "save_to_file"] opaque save_to_file : @& Typ → String → IO Unit
 
 instance : ToString Rule where toString := fun r => s!"{r.lhs} ↦ {r.rhs}"
@@ -91,10 +98,10 @@ structure HardCode where
     the definitions introduced by a given symbol. -/
 def HARD_CODE : HashMap (Name × Name) HardCode := .ofList [
     ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], [], []⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.zero_add, `Nat.succ_add, `Nat.add_assoc], [`Nat.add_eq]⟩⟩, -- Nat.succ.injEq is an equation on Eq
+    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.zero_add, `Nat.succ_add, `Nat.add_assoc], [`Nat.add_eq]⟩⟩,
     ⟨⟨`Init.Prelude, `Nat.mul⟩, ⟨[], [`Nat.mul_zero, `Nat.zero_mul, `Nat.succ_mul, `Nat.mul_succ, `Nat.mul_assoc, `Nat.mul_add, `Nat.add_mul], [`Nat.mul_eq]⟩⟩,
     ⟨⟨`Init.Prelude, `Nat.pow⟩, ⟨[], [`Nat.pow_zero, `Nat.pow_succ, `Nat.pow_add, `Nat.mul_pow], [`Nat.pow_eq]⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.le⟩, ⟨[`Nat.le.refl, `Nat.le.step], [`Nat.le_zero_eq], [`Nat.le_eq]⟩⟩, -- succ_le_succ
+    ⟨⟨`Init.Prelude, `Nat.le⟩, ⟨[`Nat.le.refl, `Nat.le.step], [`Nat.le_zero_eq], [`Nat.le_eq]⟩⟩,
     ⟨⟨`Init.Prelude, `Nat.ble⟩, ⟨[], [``Nat.ble.eq_2, ``Nat.ble.eq_3, ``Nat.ble.eq_4], []⟩⟩,
   ]
 
@@ -114,6 +121,7 @@ structure Definition where
   neighbors: Array Name := #[]
 deriving Inhabited
 
+/-- Monad for maintaining visited in DFS. -/
 abbrev WithVisited := StateT (HashSet Name) Id
 
 private partial def cyclicHelper (g : AssocList Name Definition) (u : Name)
@@ -126,9 +134,11 @@ private partial def cyclicHelper (g : AssocList Name Definition) (u : Name)
     modify (·.insert u)
     ((g.find? u).getD (panic! "cyclicHelper node not in graph.")).neighbors.anyM (λ v => cyclicHelper g v (stack.insert u))
 
+/-- Determines whether the `neigbors` adjacency arrays in `g` are cyclic. -/
 def cyclic (g : AssocList Name Definition) : Bool :=
   (g.toList.anyM (λ (⟨u, _⟩ : Name × Definition) => cyclicHelper g u {})).run' {}
 
+/-- Adds an edge to `g` corresponding to the lexicographic path ordering. -/
 partial def addConstraint (lhs : Tm) (rhs : Tm) (g : AssocList Name Definition) : Option (AssocList Name Definition) :=
   (g.find? lhs.head.toName).bind (fun defn =>
     if !g.contains rhs.head.toName then
@@ -139,12 +149,15 @@ partial def addConstraint (lhs : Tm) (rhs : Tm) (g : AssocList Name Definition) 
       g.replace lhs.head.toName { defn with neighbors := defn.neighbors.push rhs.head.toName }
   )
 
+/-- Adds termination constraints for `rules` in the form of edges in `g`. -/
 def addConstraints (rules : Array Rule) (g : AssocList Name Definition) : Option (AssocList Name Definition) :=
   rules.foldlM (fun g rule => addConstraint rule.lhs rule.rhs g) g
 
+/-- Counts the occurrences of `v` as a head symbol in `t`. -/
 partial def count (t : Tm) (v : String) : Nat :=
   t.args.foldl (init := if t.head == v then 1 else 0) (· + count · v)
 
+/-- Whether this term contains any lambda expressions. -/
 partial def containsLambda (t : Tm) : Bool :=
   if t.params.isEmpty then
     t.args.any containsLambda
@@ -222,9 +235,11 @@ def includeType (info : ConstantInfo) : ToCanonicalM Bool := do
   | .defnInfo info => pure <| !(isAuxRecursor (← getEnv) info.name) && (← includeLetType info.value)
   | _ => pure true
 
+/-- Rule corresponding to δ-reduction. -/
 def defRule (name : String) (defn : Tm) : Rule :=
   ⟨{ head := name, args := defn.params.map (fun p => { head := p.name }) }, { defn with params := #[]}, #[], false⟩
 
+/-- Rule corresponding to ι-reduction -/
 def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (constructorVal : ConstructorVal) (rhs : Tm) : Rule :=
   let ctorStart := (recVal.numParams+recVal.numMotives+recVal.numMinors);
   let args : Array Tm := (rhs.params.shrink ctorStart).map (fun p => { head := p.name })
@@ -234,12 +249,14 @@ def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (const
   let args := args ++ (rhs.params.toSubarray (ctorStart + constructorVal.numFields)).toArray.map (fun p => { head := p.name })
   ⟨{head := recursor.toString, args := args }, { rhs with params := #[] }, #[], true⟩
 
+/-- Rule corresponding to reduction of projections. -/
 def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (constructor : String) (constructorVal : ConstructorVal) (arity : Nat) : Rule :=
   let ctorArgs : Array Tm := (Array.replicate (constructorVal.numParams + constructorVal.numFields) { head := "*" }).set! (constructorVal.numParams + projInfo.i) { head := "field" }
   let fieldArgs : Array Tm := Array.ofFn (fun (i : Fin (arity - projInfo.numParams - 1)) => { head := "arg" ++ toString i.val })
   let args : Array Tm := ((Array.replicate projInfo.numParams { head := "*"}).push { head := constructor, args := ctorArgs }) ++ fieldArgs
   ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, #[], true⟩
 
+/-- Rules for the equality of distinct constructors to reduce to `False`. -/
 def reduceCtorEqRules (ind : Name) (info : InductiveVal) : MetaM (Array Rule) := do
   let mut rules := #[]
   for ctor1 in info.ctors do
@@ -254,7 +271,7 @@ def reduceCtorEqRules (ind : Name) (info : InductiveVal) : MetaM (Array Rule) :=
         ] }, { head := "False" }, #["reduceCtorEq"], true⟩
   pure rules
 
-/-- Not a complete test. TODO Filter out isRflTheorem -/
+/-- A conservative test for whether a rule (derived from a `simp` lemma) can be added to Canonical. -/
 def validSimpLemma (xs : Array Expr) (rule : Rule) : MetaM Bool := do
   if ← xs.anyM (fun x => do pure ((← forallArity (← x.fvarId!.getType)) != 0)) then
     pure false -- higher order
@@ -265,6 +282,7 @@ def validSimpLemma (xs : Array Expr) (rule : Rule) : MetaM Bool := do
   else pure true
 
 mutual
+  /-- Converts an equation theorem `e` into a rule, if possible. Returns whether the rule is a `validSimpLemma`. -/
   partial def eqnRule (attribution : Array String) (e : Expr) (settings : Settings) : ToCanonicalM (Option (Bool × Rule)) :=
     forallTelescopeReducing e fun xs e =>
       ((eq? e).mapM fun ⟨typ, lhs, rhs⟩ => do
@@ -306,6 +324,7 @@ mutual
 
       let defineType := force || (settings.depth == 0 && !Lean.isClass env declName && ((env.getProjectionFnInfo? declName).isSome || (← includeType decl)))
 
+      -- Consider admitting equational theorems as reduction rules.
       if settings.simp && defineType then
         if let some ⟨valid, rule⟩ := ← eqnRule #[decl.name.toString] decl.type settings then
           if valid && !(← isRflTheorem decl.name) then
@@ -355,6 +374,7 @@ mutual
               | none => let _ ← define (mkRecName declName) settings
               pure #[]
             | .defnInfo info =>
+              -- Use matcher equations or equation compiler where appropriate.
               if ← isMatcher declName then
                 let eqns ← Match.getEquationsFor declName
                 eqns.eqnNames.mapM fun eqn => do
@@ -535,6 +555,7 @@ mutual
       toBody decl.type params defs declName.toString (structParams.toList ++ (struct :: args)) settings (← paramArities decl.type)
 end
 
+/-- Determines whether `e` only consists of constants in `constSet`. -/
 partial def onlyDefinedConsts (e : Expr) (constSet : HashSet Name) : MetaM Bool := do
   let e ← whnf e
   match e with
@@ -556,6 +577,7 @@ partial def onlyDefinedConsts (e : Expr) (constSet : HashSet Name) : MetaM Bool 
   | proj typeName _ expr => do
     pure (constSet.contains typeName && (← onlyDefinedConsts expr constSet))
 
+/-- Retrieves the `Origin`s in `trie` consisting only of constants in `constSet`.  -/
 partial def getOrigins (constSet : HashSet Name) (trie : Lean.Meta.DiscrTree.Trie SimpTheorem) : Array Origin :=
   match trie with
   | Lean.Meta.DiscrTree.Trie.node vs children =>
@@ -590,6 +612,7 @@ def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) (simp : Bool) : To
 
   let ⟨paramTypes, defTypes, ⟨params, defs, head, args, _, _⟩⟩ ← toTyp e settings
 
+  -- Proactively search for `simp` lemmas to add as reduction rules.
   if simp then
     let constArray := (← get).toList.toArray.filter (fun ⟨_, defn⟩ => defn.type.isSome)
     let constSet := HashSet.ofArray (constArray.map (·.1))
@@ -626,6 +649,7 @@ def mvarLevels (n : Nat) : FromCanonicalM (List Level) := do
     let l ← mvarLevels m
     pure ((mkLevelMVar fresh) :: l)
 
+/-- Syntax for `simp` and `simpa` calls generated given the `premiseRules` and `goalRules` attribution. -/
 def toSyntax (premiseRules: Array String) (goalRules: Array String) : Syntax := Unhygienic.run do
   let premiseRules := premiseRules.toList.toSSet.toList.toArray
   let goalRules := goalRules.toList.toSSet.toList.toArray
@@ -658,6 +682,7 @@ mutual
       withLetDecl binderName binderType value fun fvar =>
         toLam (body.instantiate1 fvar) term typeArgs paramIndex
     | _ =>
+      -- if there are non-rfl `premiseRules` or `goalRules`, generate `simp`/`simpa` syntax.
       let premiseRules := if ← term.premiseRules.allM (fun s => do isRflTheorem s.toName) then #[] else term.premiseRules
       let goalRules := if ← term.goalRules.allM (fun s => do isRflTheorem s.toName) then #[] else term.goalRules
 
