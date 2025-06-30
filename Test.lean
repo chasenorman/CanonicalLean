@@ -1,4 +1,3 @@
 import Canonical
 
-example : Nat := by
-  canonical +refine
+example : Nat := by canonical
