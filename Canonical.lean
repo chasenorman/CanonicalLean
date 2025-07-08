@@ -1,4 +1,5 @@
 import Lean
+import Canonical.Monomorphize
 -- import Std.Time.DateTime.Timestamp
 
 namespace Canonical
@@ -10,7 +11,7 @@ structure Var where
 deriving Inhabited
 
 mutual
-  /-- A let declaration, with a name, value and reduction rules. -/
+  /-- A let declaration, with a name and value. -/
   structure Let where
     name: String
     irrelevant: Bool
@@ -97,12 +98,7 @@ structure HardCode where
 /-- Rather than recursively unfolding definitions, `HARD_CODE` overrides
     the definitions introduced by a given symbol. -/
 def HARD_CODE : HashMap (Name × Name) HardCode := .ofList [
-    ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], [], []⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.add⟩, ⟨[], [`Nat.add_zero, `Nat.add_succ, `Nat.zero_add, `Nat.succ_add, `Nat.add_assoc], [`Nat.add_eq]⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.mul⟩, ⟨[], [`Nat.mul_zero, `Nat.zero_mul, `Nat.succ_mul, `Nat.mul_succ, `Nat.mul_assoc, `Nat.mul_add, `Nat.add_mul], [`Nat.mul_eq]⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.pow⟩, ⟨[], [`Nat.pow_zero, `Nat.pow_succ, `Nat.pow_add, `Nat.mul_pow], [`Nat.pow_eq]⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.le⟩, ⟨[`Nat.le.refl, `Nat.le.step], [`Nat.le_zero_eq], [`Nat.le_eq]⟩⟩,
-    ⟨⟨`Init.Prelude, `Nat.ble⟩, ⟨[], [``Nat.ble.eq_2, ``Nat.ble.eq_3, ``Nat.ble.eq_4], []⟩⟩,
+    ⟨⟨`Mathlib.Data.Real.Basic, `Real⟩, ⟨[], [], []⟩⟩
   ]
 
 def getHardCode (name : Name) : CoreM (Option HardCode) := do
@@ -169,7 +165,7 @@ partial def containsLambda (t : Tm) : Bool :=
   handle.flush -/
 
 /-- When translating to Canonical, we maintain a state of translated constant symbols. -/
-abbrev ToCanonicalM := StateT (AssocList Name Definition) MetaM
+abbrev ToCanonicalM := StateT (AssocList Name Definition) MonoM
 
 structure Settings where
   depth: Nat := 0
@@ -179,6 +175,7 @@ structure Settings where
     but with the suffix of the `FVarId.name` for completeness. -/
 def name : Expr → MetaM Name
 | fvar fvarId => do pure (fvarId.name.updatePrefix (←fvarId.getUserName).getRoot)
+| mvar mvarId => do pure ((← getMCtx).getDecl mvarId).userName
 | _ => panic! "name of non-fvar"
 
 def nameString (e : Expr) : MetaM String := do pure (←name e).toString
@@ -189,9 +186,17 @@ def natToTerm (n : Nat) : Tm :=
   | Nat.zero => { head := (``Nat.zero).toString }
   | Nat.succ n => { head := (``Nat.succ).toString, args := #[natToTerm n] }
 
+def preprocess (e : Expr) : MonoM Expr := do
+  preprocessMono (← whnf e)
+
+def registerConstant (name : Name) : MonoM Unit := do
+  modify fun s => { s with constants := s.constants.insert name }
+
+def constSet : MonoM NameSet := return (← get).constants
+
 /-- The default arity of a type `e`.  -/
-partial def forallArity (e : Expr) : MetaM Nat := do
-  let e ← whnf e
+partial def forallArity (e : Expr) : MonoM Nat := do
+  let e ← preprocess e
   match e with
   | forallE binderName binderType body binderInfo =>
     withLocalDecl binderName binderInfo binderType fun fvar => do
@@ -200,8 +205,8 @@ partial def forallArity (e : Expr) : MetaM Nat := do
   | _ => pure 0
 
 /-- The arities of the types of the parameters of type `e`. -/
-partial def paramArities (e : Expr) : MetaM (List Nat) := do
-  let e ← whnf e
+partial def paramArities (e : Expr) : MonoM (List Nat) := do
+  let e ← preprocess e
   match e with
   | forallE binderName binderType body binderInfo =>
     withLocalDecl binderName binderInfo binderType fun fvar => do
@@ -271,8 +276,8 @@ def reduceCtorEqRules (ind : Name) (info : InductiveVal) : MetaM (Array Rule) :=
         ] }, { head := "False" }, #["reduceCtorEq"], true⟩
   pure rules
 
-/-- A conservative test for whether a rule (derived from a `simp` lemma) can be added to Canonical. -/
-def validSimpLemma (xs : Array Expr) (rule : Rule) : MetaM Bool := do
+/-- Not a complete test. TODO Filter out isRflTheorem -/
+def validSimpLemma (xs : Array Expr) (rule : Rule) : MonoM Bool := do
   if ← xs.anyM (fun x => do pure ((← forallArity (← x.fvarId!.getType)) != 0)) then
     pure false -- higher order
   else if ← xs.anyM (fun x => do pure (count rule.lhs (← nameString x) != 1)) then
@@ -318,6 +323,7 @@ mutual
     let decl := (env.find? declName).getD (panic! s!"define: constant {declName} not found")
 
     if shouldDefine then
+      let _ ← registerConstant declName
       modify (fun x =>
         x.insert declName (((x.find? declName).map (fun defn => { defn with shouldReplace := false })).getD {})
       )
@@ -327,7 +333,7 @@ mutual
       -- Consider admitting equational theorems as reduction rules.
       if settings.simp && defineType then
         if let some ⟨valid, rule⟩ := ← eqnRule #[decl.name.toString] decl.type settings then
-          if valid && !(← isRflTheorem decl.name) then
+          if valid then
             if let some g' := addConstraint rule.lhs rule.rhs (← get) then
               let c := rule.lhs.head.toName
               if let some defn := g'.find? c then
@@ -369,9 +375,10 @@ mutual
                 (addConstraints rules (x.replace `Eq defn)).getD (panic! "define: ctorEqRules nonterminating")
               )
 
-              match getStructureInfo? env declName with
-              | some info => info.fieldInfo.forM fun field => do let _ ← define field.projFn settings
-              | none => let _ ← define (mkRecName declName) settings
+              if !isClass env declName then
+                match getStructureInfo? env declName with
+                | some info => info.fieldInfo.forM fun field => do let _ ← define field.projFn settings
+                | none => let _ ← define (mkRecName declName) settings
               pure #[]
             | .defnInfo info =>
               -- Use matcher equations or equation compiler where appropriate.
@@ -400,7 +407,7 @@ mutual
   /-- Translate an `Expr` into a `Typ`, by collecting the `forallE` bindings and `app` arguments until a head symbol is reached.  -/
   partial def toTyp (e : Expr) (settings : Settings) (params : List Var := []) (paramTypes : List (Option Typ) := []) (defTypes : List (Option Typ) := []) (defs : List Let := []) (args : List Expr := [])
      : ToCanonicalM Typ := do
-    let e ← whnf e
+    let e ← preprocess e
     match e with
     | bvar _ => unreachable!
     | fvar fvarId =>
@@ -408,8 +415,13 @@ mutual
       pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ← toBody decl.type params defs (← nameString e) args settings (← paramArities decl.type)⟩
     | mvar mvarId =>
       let type ← MVarId.getType mvarId
-      modify (·.insert mvarId.name {})
-      pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ← toBody type params defs (toString mvarId.name) args settings (← paramArities type)⟩
+      let name ← name e
+      if !(← get).contains name then
+        let type ← toTyp type settings
+        modify (fun s =>
+          s.insert name { type }
+        )
+      pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, ← toBody type params defs (← nameString e) args settings (← paramArities type)⟩
     | sort _u => pure ⟨⟨paramTypes.reverse⟩, ⟨defTypes⟩, { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := "Sort" }⟩
     | const declName _us => do
       let decl ← define declName settings
@@ -434,7 +446,7 @@ mutual
     | proj typeName idx struct => do
       let env ← getEnv
       let fields := getStructureFields env typeName
-      let structParams := (←withDefault (whnf (← inferType struct))).getAppArgs
+      let structParams := (←withDefault (preprocess (← inferType struct))).getAppArgs
       let declName := Option.get! $ getProjFnForField? env typeName fields[idx]!
       let decl ← define declName settings
       let body ← toBody decl.type params defs declName.toString (structParams.toList ++ (struct :: args)) settings (← paramArities decl.type)
@@ -443,7 +455,7 @@ mutual
   /-- When we reach the head symbol, we call `toBody` with its type and `paramArities`.
       This function is responsible for recursively tranlating the arguments and building the resultant `Tm`. -/
   partial def toBody (ty : Expr) (params : List Var) (defs : List Let) (head : String) (args : List Expr) (settings : Settings) (arity : List Nat) (state : Array Tm := #[]) (typeArgs : List Expr := []) : ToCanonicalM Tm := do
-    let ty ← whnf ty
+    let ty ← preprocess ty
     match ty with
     | app fn arg => toBody fn params defs head args settings arity state (arg :: typeArgs)
     | lam binderName binderType body _binderInfo =>
@@ -479,8 +491,8 @@ mutual
 
   /-- Transalate an `Expr` to a `Tm`, by collecting the `lam` bindings and `app` arguments until a head symbol is reached. -/
   partial def toTerm (term : Expr) (type : Expr) (settings : Settings) (arity : Nat) (params : List Var := []) (defs : List Let := []) (args : List Expr := []) (typeArgs : List Expr := []) : ToCanonicalM Tm := do
-    let term ← whnf term
-    let type ← whnf type
+    let term ← preprocess term
+    let type ← preprocess type
     match term, type, args with
     | _, app fn typeArg, _ => toTerm term fn settings arity params defs args (typeArg :: typeArgs)
     | _, lam binderName binderType body _binderInfo, _ =>
@@ -535,8 +547,13 @@ mutual
       toBody decl.type params defs (← nameString term) args settings (← paramArities decl.type)
     | mvar mvarId, _, _ =>
       let type ← MVarId.getType mvarId
-      modify (·.insert mvarId.name {})
-      toBody type params defs (toString mvarId.name) args settings (← paramArities type)
+      let name ← name term
+      if !(← get).contains name then
+        let type ← toTyp type settings
+        modify (fun s =>
+          s.insert name { type }
+        )
+      toBody type params defs (← nameString term) args settings (← paramArities type)
     | sort _, _, _ => pure { params := ⟨params.reverse⟩, lets := ⟨defs⟩, head := "Sort" }
     | const declName _us, _, _ => do
       let decl ← define declName settings
@@ -549,36 +566,14 @@ mutual
     | proj typeName idx struct, _, _ => do
       let env ← getEnv
       let fields := getStructureFields env typeName
-      let structParams := (← withDefault (whnf (← inferType struct))).getAppArgs
+      let structParams := (← withDefault (preprocess (← inferType struct))).getAppArgs
       let declName := Option.get! $ getProjFnForField? env typeName fields[idx]!
       let decl ← define declName settings
       toBody decl.type params defs declName.toString (structParams.toList ++ (struct :: args)) settings (← paramArities decl.type)
 end
 
-/-- Determines whether `e` only consists of constants in `constSet`. -/
-partial def onlyDefinedConsts (e : Expr) (constSet : HashSet Name) : MetaM Bool := do
-  let e ← whnf e
-  match e with
-  | bvar _ | fvar _ | mvar _ | sort _ | lit _ => pure true
-  | const declName _ => pure (constSet.contains declName)
-  | app fn arg => do
-    onlyDefinedConsts fn constSet <&&> onlyDefinedConsts arg constSet
-  | lam binderName binderType body binderInfo => do
-    withLocalDecl binderName binderInfo binderType fun fvar => do
-      onlyDefinedConsts (body.instantiate1 fvar) constSet
-  | forallE binderName binderType body binderInfo => do
-    withLocalDecl binderName binderInfo binderType fun fvar => do
-      onlyDefinedConsts binderType constSet <&&>
-      onlyDefinedConsts (body.instantiate1 fvar) constSet
-  | letE declName type value body _ => do
-    withLetDecl declName type value fun fvar => do
-      onlyDefinedConsts (body.instantiate1 fvar) constSet
-  | mdata _ expr => onlyDefinedConsts expr constSet
-  | proj typeName _ expr => do
-    pure (constSet.contains typeName && (← onlyDefinedConsts expr constSet))
-
 /-- Retrieves the `Origin`s in `trie` consisting only of constants in `constSet`.  -/
-partial def getOrigins (constSet : HashSet Name) (trie : Lean.Meta.DiscrTree.Trie SimpTheorem) : Array Origin :=
+partial def getOrigins (constSet : NameSet) (trie : Lean.Meta.DiscrTree.Trie SimpTheorem) : Array Origin :=
   match trie with
   | Lean.Meta.DiscrTree.Trie.node vs children =>
     let filtered := children.filter (fun (child : Lean.Meta.DiscrTree.Key × DiscrTree.Trie SimpTheorem) =>
@@ -590,6 +585,20 @@ partial def getOrigins (constSet : HashSet Name) (trie : Lean.Meta.DiscrTree.Tri
     )
     (vs.filterMap (fun x => if x.priority ≥ eval_prio default then some x.origin else none)) ++ filtered.flatMap (fun x => getOrigins constSet x.2)
 
+def SIMP_HARD_CODE : HashMap Name (Array Name) := .ofList [
+  (`Nat.succ_eq_add_one, #[`Nat.succ.injEq]),
+  (`Nat.add_zero, #[`Nat.add_zero, `Nat.add_succ, `Nat.succ_add, `Nat.add_assoc]),
+  (`Nat.mul_one, #[`Nat.mul_succ,
+    `Nat.zero_add, `Nat.add_zero, `Nat.add_succ, `Nat.succ_add
+  ]),
+  (`Nat.one_mul, #[`Nat.succ_mul, `Nat.mul_assoc]),
+  (`Nat.one_pow, #[`Nat.pow_succ, `Nat.pow_add, `Nat.mul_pow]),
+  (`Nat.pow_one, #[
+    `Nat.mul_zero, `Nat.zero_mul, `Nat.mul_succ, `Nat.succ_mul,
+    `Nat.zero_add, `Nat.add_zero, `Nat.add_succ, `Nat.succ_add
+  ]),
+]
+
 /-- Converts an `Expr` `e` into a Canonical `Typ`, complete with `Definitions` in the `lets`. -/
 def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) (simp : Bool) : ToCanonicalM Typ := do
   let settings := { depth := 0, simp }
@@ -598,41 +607,61 @@ def toCanonical (e : Expr) (consts : List Syntax) (pi : Bool) (simp : Bool) : To
     | some term => modify (·.insert (← name decl.toExpr) ⟨none, ← isProp decl.type, #[defRule (← name decl.toExpr).toString term], false, #[]⟩)
     | none => modify (·.insert (← name decl.toExpr) ⟨some (← toTyp decl.type settings), ← isProp decl.type, #[], false, #[]⟩)
 
+  if pi then let _ := ← define ``Canonical.Pi settings true
+
+  let ⟨paramTypes, defTypes, ⟨params, defs, head, args, _, _⟩⟩ ← toTyp e settings
+
   consts.forM (fun stx => match stx with
     | Syntax.ident _ _ val _ => do
       let names ← Lean.resolveGlobalName val
       if h : names ≠ [] then
-        let _ := ← define (names.getLast h).1 settings true
+        let const := (names.getLast h).1
+        let info := (← getEnv).find? const |>.get!
+        let binders ← getBinders info.type
+        if binders.contains .instImplicit then
+          for ⟨expr, idx⟩ in (← monomorphizeImpl const).zipIdx do
+            let monoName := Name.mkSimple ((const.num idx).toStringWithSep "_" true)
+            let mvar := (← mkFreshExprMVar (← inferType expr) .syntheticOpaque monoName).mvarId!
+            mvar.assign expr
+            let mvarName ← name (.mvar mvar)
+            modify (·.insert mvarName { type := some (← toTyp (← mvar.getType) settings) })
+        else
+          let _ := ← define const settings true
       else
         throwErrorAt stx "Not a constant name:{indentD stx}"
       pure ()
     | stx => throwErrorAt stx "Not an identifier:{indentD stx}"
   )
-  if pi then let _ := ← define ``Canonical.Pi settings true
-
-  let ⟨paramTypes, defTypes, ⟨params, defs, head, args, _, _⟩⟩ ← toTyp e settings
 
   -- Proactively search for `simp` lemmas to add as reduction rules.
   if simp then
-    let constArray := (← get).toList.toArray.filter (fun ⟨_, defn⟩ => defn.type.isSome)
-    let constSet := HashSet.ofArray (constArray.map (·.1))
+    let constSet ← constSet
     let thms ← getSimpTheorems
-    let tries := constArray.filterMap (fun x =>
-      x.2.type.bind fun typ => thms.post.root.find? (.const x.1 typ.params.size)
+    let env ← getEnv
+    let tries := constSet.toArray.filterMap (fun x =>
+      let info := (env.find? x).get!
+      thms.post.root.find? (.const x info.type.getForallArity)
     )
-    let origins := tries.flatMap (getOrigins constSet)
-    let _ ← origins.forM fun origin => do
+    let thms := ((tries.flatMap (getOrigins constSet)).flatMap fun origin =>
       if let .decl name _ _ := origin then
-        let e := ((← getEnv).find? name |>.getD (panic! s!"simp lemma {name} does not exist.")).type
-        if (← onlyDefinedConsts e constSet) && !(← isRflTheorem name) then
-          if let some ⟨valid, rule⟩ ← eqnRule #[name.toString] e { depth := 1, simp := false } then
-            if valid then
-              if let some g' := addConstraint rule.lhs rule.rhs (← get) then
-                let c := rule.lhs.head.toName
-                if let some defn := g'.find? c then
-                  if !cyclic g' then
-                    set (g'.insert c { defn with rules := defn.rules.push rule })
+        if let some names := SIMP_HARD_CODE.get? name then
+          names
+        else #[name]
+      else #[]
+    ).toList.toSSet
 
+    let _ ← thms.forM fun name => do
+      let e := ((← getEnv).find? name |>.getD (panic! s!"simp lemma {name} does not exist.")).type
+      if e.getUsedConstantsAsSet.subset constSet then
+        if let some ⟨valid, rule⟩ ← eqnRule #[name.toString] e { depth := 1, simp := false } then
+          if valid then
+            if let some g' := addConstraint rule.lhs rule.rhs (← get) then
+              let c := rule.lhs.head.toName
+              if let some defn := g'.find? c then
+                if !cyclic g' then
+                  set (g'.insert c { defn with rules := defn.rules.push rule })
+
+  let _ := ← exit
   let decls := (← get).toList.toArray.push ⟨Name.mkSimple "Sort", { type := some {codomain := { head := "Sort"}} }⟩
   pure ⟨paramTypes, decls.map (λ ⟨_, t⟩ => t.type) ++ defTypes,
     { params, lets := (decls.map (λ ⟨name, t⟩ => ⟨name.toString false, t.irrelevant, t.rules⟩) ++ defs), head, args }⟩
@@ -699,8 +728,12 @@ mutual
             let constName := term.head.toName
             match (← getEnv).find? constName with
             | none =>
-              let name := ((term.head.dropWhile (fun x => x != ';')).drop 1).takeWhile (fun x => x.isAlphanum)
-              mkFreshExprMVar (some (mkAppN type typeArgs.toArray)) (userName := name.toName)
+              match (← getMCtx).findUserName? constName with
+              | some mdecl =>
+                whnf (← toApp (← mdecl.getType) (← instantiateMVars (.mvar mdecl)) term.args.toList 0 [])
+              | none =>
+                let name := ((term.head.dropWhile (fun x => x != ';')).drop 1).takeWhile (fun x => x.isAlphanum)
+                mkFreshExprMVar (some (mkAppN type typeArgs.toArray)) (userName := name.toName)
             | some decl => toApp decl.type (mkConst constName (←mvarLevels decl.numLevelParams)) term.args.toList 0 []
         | some fvarId => toApp ((← MonadLCtx.getLCtx).get! fvarId).type (mkFVar fvarId) term.args.toList 0 []
 
@@ -737,11 +770,13 @@ partial def dePi (e : Expr) : Expr :=
     match e with
     | app fn arg => mkApp (dePi fn) (dePi arg)
     | lam binderName binderType body binderInfo => mkLambda binderName binderInfo (dePi binderType) (dePi body)
-    | letE binderName binderType value body nonDep => mkLet binderName (dePi binderType) (dePi value) (dePi body) (nonDep := nonDep)
+    | letE binderName binderType value body nondep => mkLet binderName (dePi binderType) (dePi value) (dePi body) (nondep := nondep)
     | _ => e
 
 /-- Lean's default unfolding predicate copied from `Lean.Meta.GetUnfoldableConst`. -/
 def canUnfoldDefault (cfg : Config) (info : ConstantInfo) : CoreM Bool := do
+  if info.name == `OfNat.ofNat || info.name.toString.startsWith "instOfNat" then
+    return true
   match cfg.transparency with
   | .all => return true
   | .default => return !(← isIrreducible info.name)
@@ -848,14 +883,17 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
     | _ => Elab.throwUnsupportedSyntax
   | none => pure []
 
-  Meta.withCanUnfoldPred (λ config info => do pure ((← canUnfoldDefault config info) || (← canUnfold info.value!))) $ withReducibleAndInstances $ withMainContext do
+  Meta.withCanUnfoldPred (λ config info => do pure ((← canUnfoldDefault config info) || (← canUnfold info.value!))) $ withReducible $ withMainContext do
     -- let start ← Std.Time.Timestamp.now
     let config ← canonicalConfig config
 
     let goal ← getMainTarget
-    let type ← toCanonical goal argList config.pi config.simp |>.run' default
-
     let lctx ← MonadLCtx.getLCtx
+    let type ← (toCanonical goal argList config.pi config.simp |>.run' default).run' {
+      globalFVars := Std.HashSet.ofArray lctx.getFVarIds
+      constants := .ofList [ ``OfNat.ofNat, ``instOfNatNat ]
+    }
+
     let map ← lctx.foldlM (fun map decl => do
       if Lean.LocalDecl.isAuxDecl decl then pure map else pure (map.insert (← nameString (mkFVar decl.fvarId)) decl.fvarId)) {}
 
@@ -867,9 +905,10 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:Parser.Tac
       let range := fileMap.utf8RangeToLspRange strRange
       let width := Lean.Meta.Tactic.TryThis.getInputWidth (← getOptions)
       let (indent, column) := Lean.Meta.Tactic.TryThis.getIndentAndColumn fileMap strRange
+      let x ← Server.WithRpcRef.mk (RpcData.mk goal lctx width indent column)
       Lean.Widget.savePanelWidgetInfo (hash refineWidget.javascript) (← getRef)
         (props := do
-          let rpcData ← Server.RpcEncodable.rpcEncode (Server.WithRpcRef.mk (RpcData.mk goal lctx width indent column))
+          let rpcData ← Server.RpcEncodable.rpcEncode x
           pure (Json.mkObj [("rpcData", rpcData), ("range", ToJson.toJson range)]))
       return
 
