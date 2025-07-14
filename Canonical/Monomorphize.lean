@@ -2,6 +2,8 @@ import Lean
 open Lean Elab Tactic Expr Std
 open Meta hiding transform
 
+namespace Monomorphize
+
 structure Abstracted where
   expr : Expr
   levels : List Name
@@ -30,6 +32,10 @@ instance : ToString MonoState where
   toString s := s!"{s.mono.toList.map fun x => x.1}\n{s.given.toList.map fun x => x.expr}"
 
 abbrev MonoM := StateT MonoState MetaM
+
+def addConstant (name : Name) : MonoM Unit := do
+  -- TODO set dirty flag
+  modify fun s => { s with constants := s.constants.insert name }
 
 partial def getBinders (e : Expr) : MetaM (List BinderInfo) := do
   match e with

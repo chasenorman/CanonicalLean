@@ -2,6 +2,8 @@ import Lean
 
 open Lean Meta Expr Name
 
+namespace Canonical
+
 structure Arity where
   params : Array Arity := #[]
 deriving Inhabited
@@ -16,6 +18,9 @@ partial def typeArity (e : Expr) : MetaM Arity := do
       let id := param.fvarId!
       pure (← typeArity (← id.getType))⟩
 
+partial def typeArity1 (e : Expr) : MetaM Nat := do
+  forallTelescopeReducing e fun xs _ => return xs.size
+
 def toHead : Expr → MetaM (Name × Expr)
 | fvar id =>
   return (id.name.updatePrefix (← id.getUserName).getRoot, ← id.getType)
@@ -24,8 +29,7 @@ def toHead : Expr → MetaM (Name × Expr)
 | sort l =>
   return (`Sort, .sort (.succ l))
 | const name us => do
-  let info := ((← getEnv).find? name).get!
-  return (name, info.instantiateTypeLevelParams us)
+  return (name, (← getConstInfo name).instantiateTypeLevelParams us)
 | lit l =>
   let name : Name := match l with
   | .natVal n => .num .anonymous n
@@ -50,6 +54,11 @@ def canUnfold (_cfg : Config) (info : ConstantInfo) : CoreM Bool := do
   if let some value := info.value? then
     return ← (hidesForall value).run' {}
   else return false
+
+def isRecursive (e : Expr) : MetaM Bool := do
+  let env ← getEnv
+  return e.getUsedConstants.any fun c =>
+    (env.find? c).get! matches .recInfo _ || isAuxRecursor env c
 
 def rawRawNatLit : Nat → Expr
 | 0 => .const ``Nat.zero []

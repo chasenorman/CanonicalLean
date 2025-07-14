@@ -1,1 +1,1 @@
-import Canonical.ToCanonical
+import Canonical.Main

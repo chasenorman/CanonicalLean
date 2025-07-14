@@ -2,6 +2,8 @@ import Lean
 
 open Lean.Meta Lean.Elab
 
+namespace Canonical
+
 structure Var where
   name: String
 deriving Inhabited, Repr
@@ -47,3 +49,6 @@ instance : ToString Term where toString := termToString
 
 @[never_extract, extern "typ_to_string"] opaque typToString: @& Typ → String
 instance : ToString Typ where toString := typToString
+
+instance : ToString Rule where
+  toString r := s!"{r.lhs} ↦ {r.rhs}"

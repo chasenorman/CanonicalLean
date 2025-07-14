@@ -15,15 +15,15 @@ package Canonical where
   preferReleaseBuild := true
   buildArchive := buildArchive ++ ".tar.gz"
 
-target canonical pkg : Dynlib := do pure $ Job.pure {
-  path := pkg.sharedLibDir / nameToSharedLib "canonical_lean"
-  name := "canonical_lean"
-}
+-- target canonical pkg : Dynlib := do pure $ Job.pure {
+--   path := pkg.sharedLibDir / nameToSharedLib "canonical_lean"
+--   name := "canonical_lean"
+-- }
 
 @[default_target]
 lean_lib Canonical where
   precompileModules := true
-  moreLinkLibs := #[canonical]
+  moreLinkLibs := #[/-canonical-/]
 
 @[test_driver]
 lean_lib Test
