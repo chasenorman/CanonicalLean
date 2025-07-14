@@ -25,15 +25,15 @@ def toHead : Expr → MetaM (Name × Expr)
 | fvar id =>
   return (id.name.updatePrefix (← id.getUserName).getRoot, ← id.getType)
 | mvar id =>
-  return (id.name.updatePrefix ((← getMCtx).getDecl id).userName, ← id.getType)
+  return (((← getMCtx).getDecl id).userName, ← id.getType)
 | sort l =>
-  return (`Sort, .sort (.succ l))
-| const name us => do
+  return (`Sort, .sort (l.succ))
+| const name us =>
   return (name, (← getConstInfo name).instantiateTypeLevelParams us)
 | lit l =>
   let name : Name := match l with
   | .natVal n => .num .anonymous n
-  | .strVal s => .str .anonymous s!"\"{s}\""
+  | .strVal s => .str .anonymous s.quote
   return (name, l.type)
 | _ => unreachable!
 

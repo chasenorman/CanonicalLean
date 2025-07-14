@@ -131,7 +131,7 @@ mutual
         if !(← read).arities.contains id then
           dbg_trace head
         pure ((← read).arities[id]!)
-      | const name _ => define head.toString type (defineConst name)
+      | const name _ => defineConst name
       | _ => define head.toString type
       return ← addArgs { head := head.toString } type args.toList arity.params.toList
 
@@ -155,7 +155,8 @@ mutual
       assert! args.isEmpty
       return spine
 
-  partial def define (name : String) (type : Expr) (onDefine : ToCanonicalM Unit := do pure ()) : ToCanonicalM Arity := do
+  partial def define (name : String) (type : Expr)
+    (onDefine : ToCanonicalM Unit := do pure ()) (onType : ToCanonicalM Unit := do pure ()) : ToCanonicalM Arity := do
     if !(← get).definitions.contains name then
       let defn := { type := .undef, arity := ← typeArity type }
       modify fun state => { state with definitions := state.definitions.insert name defn }
@@ -172,9 +173,10 @@ mutual
       modify (fun state => { state with numTypes := state.numTypes + 1 })
       let type ← toTyp type
       let _ ← setType name (.some type)
+      let _ ← onType
     return defn.arity
 
-  partial def defineConst (name : Name) : ToCanonicalM Unit := do
+  partial def onDefineConst (name : Name) : ToCanonicalM Unit := do
     let _ ← addConstant name
     let rules ← constRules name
     let success ← addConstraints rules
@@ -189,7 +191,7 @@ mutual
       return #[]
     if let some info := (← getEnv).getProjectionFnInfo? name then
       let ctorInfo ← getConstInfoCtor info.ctorName
-      let _ ← define info.ctorName.toString ctorInfo.type (defineConst info.ctorName)
+      let _ ← defineConst info.ctorName
       return #[projRule name.toString info (info.ctorName.toString) ctorInfo (← typeArity1 decl.type)]
     if ← isMatcher name then
       let eqns ← Match.getEquationsFor name
@@ -204,16 +206,26 @@ mutual
         let type ← inferType r.rhs
         let term ← toTerm r.rhs type (← typeArity type).params.toList
         pure (recRule name info r.ctor (← getConstInfoCtor r.ctor) term)
-    | .inductInfo info =>
+    | .defnInfo info =>
+      let includeType := !isAuxRecursor (← getEnv) name || (← isRecursive info.value)
+      if !includeType then
+        let _ ← setType name.toString .none
+      withReader (fun ctx => { ctx with noTypes := includeType }) do
+        let defn ← toTerm info.value decl.type (← typeArity decl.type).params.toList
+        return #[defRule name.toString defn]
+    | _ => return #[]
+
+  partial def onTypeConst (name : Name) : ToCanonicalM Unit := do
+    if let .inductInfo info ← getConstInfo name then
       let env ← getEnv
       for ctor in info.ctors do
-        let _ ← define ctor.toString (env.find? ctor).get!.type (defineConst ctor)
+        let _ ← defineConst ctor
 
       withReader (fun ctx => { ctx with noTypes := true}) do
-        let _ ← define (`False).toString (env.find? `False).get!.type (defineConst `False)
-        let _ ← define (`Eq).toString (env.find? `Eq).get!.type (defineConst `Eq)
+        let _ ← defineConst ``False
+        let _ ← defineConst ``Eq
 
-      let rules ← reduceCtorEqRules decl.name info
+      let rules ← reduceCtorEqRules name info
       let success ← addConstraints rules
       assert! success
       modify (fun x =>
@@ -224,18 +236,12 @@ mutual
 
       if let some info := getStructureInfo? env name then
         for field in info.fieldInfo do
-          let _ ← define field.projFn.toString (env.find? field.projFn).get!.type (defineConst field.projFn)
+          let _ ← defineConst field.projFn
       else
-        let _ ← define (mkRecName name).toString (env.find? (mkRecName name)).get!.type (defineConst (mkRecName name))
-      return #[]
-    | .defnInfo info =>
-      let includeType := !isAuxRecursor (← getEnv) name || (← isRecursive info.value)
-      if !includeType then
-        let _ ← setType name.toString .none
-      withReader (fun ctx => { ctx with noTypes := includeType }) do
-        let defn ← toTerm info.value decl.type (← typeArity decl.type).params.toList
-        return #[defRule name.toString defn]
-    | _ => return #[]
+        let _ ← defineConst (mkRecName name)
+
+  partial def defineConst (name : Name) : ToCanonicalM Arity := do
+    define name.toString (← getConstInfo name).type (onDefineConst name) (onTypeConst name)
 
   partial def toRule (attribution : Array String) (e : Expr) (returnInvalid : Bool := true) : ToCanonicalM (Option Rule) :=
     forallTelescopeReducing e fun xs e =>
@@ -270,7 +276,7 @@ def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
 
   for const in premises do
     -- TODO simp, monomorphize
-    let _ ← define const.toString (← getConstInfo const).type (defineConst const)
+    let _ ← defineConst const
 
   let typ ← toTyp goal
 
@@ -278,6 +284,8 @@ def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
 
   let lets : Array (Let × Option Typ) :=
     lets ++ (← get).definitions.toArray.map fun ⟨name, defn⟩ => ({ name, rules := defn.rules }, defn.type.toOption)
+
+  let _ ← exit
 
   return { typ with
     letTypes := lets.map Prod.snd ++ typ.letTypes,
