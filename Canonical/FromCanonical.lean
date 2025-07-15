@@ -21,6 +21,30 @@ partial def removePi (t : Term) : Term :=
                spine := { fn.spine with args := fn.spine.args.push arg } }
   else t
 
+open PrettyPrinter Delaborator SubExpr in
+@[delab mdata.canonical]
+def delabCanonical : Delab := do
+  match ← getExpr with
+  | .mdata map _ =>
+    let result ← (map.getSyntax `canonical).replaceM (fun x =>
+      if x.isMissing then withMDataExpr delab else pure none)
+    pure (TSyntax.mk result)
+  | _ => throwError "delabCanonical called on non-mdata"
+
+/-- Syntax for `simp` and `simpa` calls generated given the `premiseRules` and `goalRules` attribution. -/
+def toSyntax (premiseRules: Array String) (goalRules: Array String) : Syntax := Unhygienic.run do
+  let premiseRules := premiseRules.toList.toSSet.toList.toArray
+  let goalRules := goalRules.toList.toSSet.toList.toArray
+  let result ← if premiseRules.isEmpty then `(tacticSeq| exact $(TSyntax.mk .missing)) else
+    let cc : Array (TSyntax `ident) := premiseRules.map (fun s => mkIdent s.toName)
+    `(tacticSeq| simpa only [$[$cc:ident],*] using $(TSyntax.mk .missing))
+  let result ← if goalRules.isEmpty then
+    `(term| by $result)
+  else do
+    let cc : Array (TSyntax `ident) := goalRules.map (fun s => mkIdent s.toName)
+    `(term| by simp only [$[$cc:ident],*] <;> $(TSyntax.mk result))
+  pure result
+
 /- Inverse of `toHead` in `Util.lean`. -/
 def fromHead (s : String) : FromCanonicalM (Expr × Expr) := do
   if s == (`Sort).toString then
@@ -48,7 +72,15 @@ mutual
       let ids := xs.map (fun x => x.fvarId!)
       let names := t.params.map (fun v => v.name)
       modify (·.insertMany (names.zip ids))
-      mkLambdaFVars xs (← fromSpine t.spine)
+
+      let result ← mkLambdaFVars xs (← fromSpine t.spine)
+
+      let premiseRules := if ← t.spine.premiseRules.allM (fun s => do isRflTheorem s.toName) then #[] else t.spine.premiseRules
+      let goalRules := if ← t.goalRules.allM (fun s => do isRflTheorem s.toName) then #[] else t.goalRules
+
+      if (!premiseRules.isEmpty || !goalRules.isEmpty) then
+        return .mdata (KVMap.empty.insert `canonical (.ofSyntax (toSyntax premiseRules goalRules))) result
+      else return result
 
   partial def fromSpine (s : Spine) : FromCanonicalM Expr := do
     if s.head == (``Pi).toString then
@@ -58,7 +90,7 @@ mutual
         return (.forallE a b c d)
       else throwError "Failure to convert Pi to forallE."
     let (fn, fnType) ← fromHead s.head
-    return mkAppN fn (← fromApp s.args.toList fnType).toArray
+    return ← whnf (mkAppN fn (← fromApp s.args.toList fnType).toArray)
 
   partial def fromApp (args : List Term) (type : Expr) : FromCanonicalM (List Expr) := do
     match ← whnf type with

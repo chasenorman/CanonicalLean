@@ -2,6 +2,7 @@ import Canonical.Basic
 import Canonical.Util
 import Canonical.Monomorphize
 import Canonical.Reduction
+import Canonical.Simp
 import Lean
 
 open Lean hiding Term
@@ -275,12 +276,43 @@ def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
   ) #[]
 
   for const in premises do
-    -- TODO simp, monomorphize
+    let info ← getConstInfo const
+    if (← getBinders info.type).contains .instImplicit then
+      for ⟨expr, idx⟩ in (← monomorphizeImpl const).zipIdx do
+        let monoName := Name.mkSimple ((const.num idx).toStringWithSep "_" true)
+        let mvar := (← mkFreshExprMVar (← inferType expr) .syntheticOpaque monoName).mvarId!
+        mvar.assign expr
+        let (mvarName, mvarType) ← toHead (.mvar mvar)
+        let _ ← define mvarName.toString mvarType
+        -- TODO what if these can be registered as reduction rules?
+        continue
+
+    if let some rule ← toRule #[const.toString] info.type false then
+      if ← addConstraints #[rule] then
+        modify fun s => { s with
+          definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
+            rules := defn.rules.push rule
+          }
+        }
+        continue
+
     let _ ← defineConst const
 
   let typ ← toTyp goal
 
-  -- TODO simp
+  let mut attempted ← getConstants
+  while ← consumeDirty do
+    let thms ← getRelevantSimpTheorems (← getConstants)
+    for thm in thms do
+      if !attempted.contains thm then
+        attempted := attempted.insert thm
+        if let some rule ← toRule #[thm.toString] (← getConstInfo thm).type false then
+          if ← addConstraints #[rule] then
+            modify fun s => { s with
+              definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
+                rules := defn.rules.push rule
+              }
+            }
 
   let lets : Array (Let × Option Typ) :=
     lets ++ (← get).definitions.toArray.map fun ⟨name, defn⟩ => ({ name, rules := defn.rules }, defn.type.toOption)

@@ -18,15 +18,16 @@ instance : Hashable Abstracted where
   hash := fun x => (instantiateLevelParams x.expr x.levels (x.levels.map (fun _ => Level.zero))).hash
 
 structure Mono where
-  id : MVarId
-  levels : List Name
-  assignment : Expr
+  id: MVarId
+  levels: List Name
+  assignment: Expr
 
 structure MonoState where
-  mono : HashMap Expr (List Mono) := .emptyWithCapacity 8
-  given : HashSet Abstracted := .emptyWithCapacity 8
-  globalFVars : HashSet FVarId := .emptyWithCapacity 0
-  constants : NameSet := .empty
+  mono: HashMap Expr (List Mono) := .emptyWithCapacity 8
+  given: HashSet Abstracted := .emptyWithCapacity 8
+  globalFVars: HashSet FVarId := .emptyWithCapacity 0
+  constants: NameSet := .empty
+  dirty: Bool := true
 
 instance : ToString MonoState where
   toString s := s!"{s.mono.toList.map fun x => x.1}\n{s.given.toList.map fun x => x.expr}"
@@ -34,8 +35,24 @@ instance : ToString MonoState where
 abbrev MonoM := StateT MonoState MetaM
 
 def addConstant (name : Name) : MonoM Unit := do
-  -- TODO set dirty flag
-  modify fun s => { s with constants := s.constants.insert name }
+  modify fun s => { s with
+    constants := s.constants.insert name,
+    dirty := s.dirty || !s.constants.contains name
+  }
+
+def addConstants (names : NameSet) : MonoM Unit := do
+  modify fun s => { s with
+    constants := s.constants.union names,
+    dirty := s.dirty || !names.subset s.constants
+  }
+
+def getConstants : MonoM NameSet := do
+  return (← get).constants
+
+def consumeDirty : MonoM Bool := do
+  let s ← get
+  modify fun s => { s with dirty := false }
+  return s.dirty
 
 partial def getBinders (e : Expr) : MetaM (List BinderInfo) := do
   match e with
@@ -123,9 +140,9 @@ partial def preprocessMono (e : Expr) : MonoM Expr := do
             let mvar := (← mkFreshExprMVar (← inferType
               (abstracted.instantiateLevelParams paramNames.toList (← mkFreshLevelMVars paramNames.size))) .syntheticOpaque name).mvarId!
             modify fun s => { s with
-              mono := s.mono.insert fn (⟨mvar, paramNames.toList, abstracted⟩ :: set),
-              constants := s.constants.append skeleton.getUsedConstantsAsSet
+              mono := s.mono.insert fn (⟨mvar, paramNames.toList, abstracted⟩ :: set)
             }
+            let _ ← addConstants skeleton.getUsedConstantsAsSet
             let success ← isDefEq skeleton e
             assert! success
             return ← instantiateMVars (mkAppN (.mvar mvar) mvars)
@@ -230,7 +247,7 @@ def monomorphizeImpl (name : Name) : MonoM (List Expr) := do
     -- The proper thing to do is to return the levels, too
     let result := result.instantiateLevelParams abstrResult.paramNames.toList (abstrResult.paramNames.toList.map (fun _ => Level.zero))
 
-    modify fun s => { s with constants := s.constants.append result.getUsedConstantsAsSet }
+    let _ ← addConstants result.getUsedConstantsAsSet
 
     return result
 
