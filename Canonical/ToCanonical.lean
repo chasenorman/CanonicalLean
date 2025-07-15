@@ -253,11 +253,9 @@ mutual
             pure (id, ← typeArity (← id.getType)))
           withReader (fun ctx => { ctx with arities := ctx.arities.insertMany arities }) do
             -- convert an equality of functions into an extensional equality of their applications
-            let lhs ← whnf (mkAppN lhs txs)
-            let rhs ← whnf (mkAppN rhs txs)
-            let rule := ⟨← toSpine lhs, ← toSpine rhs, attribution, true⟩
-            if returnInvalid || (← validSimpLemma (xs ++ txs) rule) then
-              return some rule
+            let lhs ← toSpine (← whnf (mkAppN lhs txs))
+            if returnInvalid || (← validSimpLemma (xs ++ txs) lhs) then
+              return some ⟨lhs, ← toSpine (← whnf (mkAppN rhs txs)), attribution, true⟩
             else return none
 
 end

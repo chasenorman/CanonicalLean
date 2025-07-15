@@ -72,3 +72,9 @@ def printForce (s : String) : IO Unit := do
   let handle ← IO.FS.Handle.mk "output.txt" IO.FS.Mode.append
   handle.putStrLn s
   handle.flush
+
+def applyOptions : Options → Options :=
+  (pp.proofs.set · true |>
+  (pp.motives.all.set · true |>
+  (pp.coercions.set · false |>
+  (pp.unicode.fun.set · true))))

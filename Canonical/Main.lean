@@ -1,5 +1,6 @@
 import Canonical.ToCanonical
 import Canonical.FromCanonical
+import Canonical.Refine
 
 namespace Canonical
 
@@ -21,19 +22,10 @@ deriving Inhabited
 /-- Start a server with the refinement UI on the given type. -/
 @[never_extract, extern "refine"] opaque refine : @& Typ → IO Unit
 
-/-- Obtains the current term from the refinement UI. -/
-@[never_extract, extern "get_refinement"] opaque getRefinement : IO Tm
-
 /-- A version of `Core.checkInterrupted` that does not crash. -/
 def interrupted : CoreM Bool := do
   if let some tk := (← read).cancelTk? then return ← tk.isSet
   else return false
-
-def applyOptions : Options → Options :=
-  (pp.proofs.set · true |>
-  (pp.motives.all.set · true |>
-  (pp.coercions.set · false |>
-  (pp.unicode.fun.set · true))))
 
 structure CanonicalConfig where
   /-- Canonical produces `count` proofs. -/
@@ -71,6 +63,21 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
       Elab.admitGoal (← getMainGoal)
       let _ ← save_to_file typ "debug.json"
       dbg_trace typ
+      return
+
+    if config.refine then
+      let _ ← refine typ
+      Elab.admitGoal (← getMainGoal)
+      let fileMap ← getFileMap
+      let strRange := (← getRef).getRange?.getD (panic! "No range found!")
+      let range := fileMap.utf8RangeToLspRange strRange
+      let width := Lean.Meta.Tactic.TryThis.getInputWidth (← getOptions)
+      let (indent, column) := Lean.Meta.Tactic.TryThis.getIndentAndColumn fileMap strRange
+      let x ← Server.WithRpcRef.mk (RpcData.mk goal (← getLCtx) width indent column)
+      Lean.Widget.savePanelWidgetInfo (hash refineWidget.javascript) (← getRef)
+        (props := do
+          let rpcData ← Server.RpcEncodable.rpcEncode x
+          pure (Json.mkObj [("rpcData", rpcData), ("range", ToJson.toJson range)]))
       return
 
     checkInterrupted

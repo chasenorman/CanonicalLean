@@ -31,7 +31,7 @@ export default function(props) {
     React.useEffect(() => {
     const onMessage = async (event) => {
         if (event.data?.type === 'insert') {
-            const result = await rs.call('getRefinementStr', { pos: props.pos, rpcData: props.rpcData, range: props.range });
+            const result = await rs.call('Canonical.getRefinementStr', { pos: props.pos, rpcData: props.rpcData, range: props.range });
             editorConnection.api.applyEdit({
                 changes: { [pos.uri]: [{ range: props.range, newText: result }] }
             })

@@ -17,12 +17,12 @@ partial def containsLambda (t : Term) : Bool :=
 partial def count (t : Spine) (v : String) : Nat :=
   t.args.foldl (init := if t.head == v then 1 else 0) (· + count ·.spine v)
 
-def validSimpLemma (xs : Array Expr) (rule : Rule) : MetaM Bool := do
+def validSimpLemma (xs : Array Expr) (lhs : Spine) : MetaM Bool := do
   if ← xs.anyM (fun x => do pure ((← typeArity1 (← x.fvarId!.getType)) != 0)) then
     pure false -- higher order
-  else if ← xs.anyM (fun x => do pure (count rule.lhs (← toNameString x) != 1)) then
+  else if ← xs.anyM (fun x => do pure (count lhs (← toNameString x) != 1)) then
     pure false -- unbound or overused variable
-  else if rule.lhs.args.any containsLambda then
+  else if lhs.args.any containsLambda then
     pure false -- potentially requires that the lambda does not use the fvars
   else pure true
 
