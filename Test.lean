@@ -1,6 +1,11 @@
 import Canonical.Main
 
-axiom add_comm' [Add X] (n m : X) : n + m = m + n
+axiom HashSet (X : Type) [BEq X] [Hashable X] : Type
 
-theorem add_comm [Add X] (n m : X) : n + m = m + n := by
-  canonical +debug [add_comm']
+axiom empty [BEq X] [Hashable X] : HashSet X
+
+noncomputable def getEmpty : HashSet Nat := by
+  canonical [empty]
+
+#check Nat.decEq.match_1
+#check Nat.decEq

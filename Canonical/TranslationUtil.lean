@@ -116,3 +116,9 @@ def elimSpecial (e : Expr) : MetaM Expr := do
       let info := getStructureInfo (← getEnv) type
       return mkAppN (← mkProjection struct info.fieldNames[idx]!) args
     | _ => return e
+
+def defineInstance : ToCanonicalM Typ := do
+  let typ : Typ := { spine := { head := "<instImplicit>" } }
+  modify (fun s => { s with definitions := (
+    s.definitions.insert "<instImplicit>" { arity := {}, type := .none }).insert "<synthInstance>" { arity := {}, type := .some typ } })
+  return typ

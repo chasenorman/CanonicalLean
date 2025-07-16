@@ -66,14 +66,16 @@ def fromHead (s : String) : FromCanonicalM (Expr × Expr) := do
 
 mutual
   partial def fromTerm (t : Term) (type : Expr) : FromCanonicalM Expr := do
-    forallTelescopeReducing type fun xs _ => do
+    forallTelescopeReducing type fun xs body => do
       let t := removePi t
       assert! xs.size == t.params.size
       let ids := xs.map (fun x => x.fvarId!)
       let names := t.params.map (fun v => v.name)
       modify (·.insertMany (names.zip ids))
 
-      let result ← mkLambdaFVars xs (← fromSpine t.spine)
+      let result ← if t.spine.head == "<synthInstance>" then
+        synthInstance body
+      else mkLambdaFVars xs (← fromSpine t.spine)
 
       let premiseRules := if ← t.spine.premiseRules.allM (fun s => do isRflTheorem s.toName) then #[] else t.spine.premiseRules
       let goalRules := if ← t.goalRules.allM (fun s => do isRflTheorem s.toName) then #[] else t.goalRules

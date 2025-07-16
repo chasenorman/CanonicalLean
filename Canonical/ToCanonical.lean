@@ -25,8 +25,10 @@ mutual
         return { paramTypes, params, spine := ← toSpine body }
 
   partial def toBind (id : FVarId) : ToCanonicalM (Option Typ) := do
-    if (← id.getBinderInfo).isInstImplicit && (← read).config.monomorphize && (← read).polarity matches .premise then
-      return none
+    if (← id.getBinderInfo).isInstImplicit && (← read).config.monomorphize then
+      match (← read).polarity with
+      | .premise => return none
+      | .goal => return some (← defineInstance)
     return some (← toTyp (← id.getType))
 
   partial def toTerm (e : Expr) (type : Expr) (arities : List Arity) (params : Array Var := #[]) : ToCanonicalM Term := do
@@ -63,6 +65,10 @@ mutual
   partial def addArgs (spine : Spine) (type : Expr) (args : List Expr) (arities : List Arity) : ToCanonicalM Spine := do
     match ← whnf type with
     | forallE name binderType body info =>
+      if (← read).config.monomorphize && info.isInstImplicit then
+        let _ ← defineInstance
+        return ← addArgs { spine with args := spine.args.push { spine := { head := "<synthInstance>" } } } (body.instantiate1 args.head!) args.tail! arities.tail
+
       let spine ← match arities with
       | [] => do
         pure { head := (``Pi.f).toString, args := #[
@@ -82,31 +88,33 @@ mutual
 
   partial def define (name : String) (type : Expr)
     (onDefine : ToCanonicalM Unit := do pure ()) (onType : ToCanonicalM Unit := do pure ()) : ToCanonicalM Arity := do
-    if !(← get).definitions.contains name then
-      let defn := { type := .undef, arity := ← typeArity type }
-      modify fun state => { state with definitions := state.definitions.insert name defn }
-      let _ ← onDefine
+    withReader (fun ctx => { ctx with polarity := .premise }) do
+      if !(← get).definitions.contains name then
+        let defn := { type := .undef, arity := ← typeArity type }
+        modify fun state => { state with definitions := state.definitions.insert name defn }
+        let _ ← onDefine
 
-    if (← get).numTypes == MAX_TYPES then
-      modify (fun state => { state with numTypes := MAX_TYPES + 1 })
-      logWarning s!"Runaway definitions! No longer defining types."
-    let defineType := !(← read).noTypes && (← get).numTypes < MAX_TYPES
+      if (← get).numTypes == MAX_TYPES then
+        modify (fun state => { state with numTypes := MAX_TYPES + 1 })
+        logWarning s!"Runaway definitions! No longer defining types."
+      let defineType := !(← read).noTypes && (← get).numTypes < MAX_TYPES
 
-    let defn := (← get).definitions[name]!
-    if defn.type matches .undef && defineType then
-      let _ ← setType name .none
-      modify (fun state => { state with numTypes := state.numTypes + 1 })
-      let type ← toTyp type
-      let _ ← setType name (.some type)
-      let _ ← onType
-    return defn.arity
+      let defn := (← get).definitions[name]!
+      if defn.type matches .undef && defineType then
+        let _ ← setType name .none
+        modify (fun state => { state with numTypes := state.numTypes + 1 })
+        let type ← toTyp type
+        let _ ← setType name (.some type)
+        let _ ← onType
+      return defn.arity
 
   partial def onDefineConst (name : Name) : ToCanonicalM Unit := do
     let _ ← addConstant name
     let rules ← constRules name
     let success ← addConstraints rules
-    assert! success
-    modify fun state => { state with definitions := state.definitions.modify name.toString (fun defn =>
+    if !success then
+      logWarning s!"Rules {rules} for {name} are non-terminating."
+    else modify fun state => { state with definitions := state.definitions.modify name.toString (fun defn =>
       { defn with rules := defn.rules ++ rules }) }
     pure ()
 
