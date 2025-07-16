@@ -27,19 +27,6 @@ def interrupted : CoreM Bool := do
   if let some tk := (← read).cancelTk? then return ← tk.isSet
   else return false
 
-structure CanonicalConfig where
-  /-- Canonical produces `count` proofs. -/
-  count: USize := 1
-  /-- Provides `(A → B) : Sort` as an axiom to Canonical. -/
-  pi: Bool := false
-  debug: Bool := false
-  /-- Opens the refinement UI. -/
-  refine: Bool := false
-  simp: Bool := true
-  monomorphize: Bool := true
-
-declare_config_elab canonicalConfig CanonicalConfig
-
 syntax premises := " [" withoutPosition(term,*,?) "]"
 
 /-- Canonical exhaustively searches for terms in dependent type theory. -/
@@ -55,9 +42,9 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
   let config ← canonicalConfig config
   let premises := if config.pi then premises.push ``Pi else premises
 
-  withArityUnfold do withMainContext do
+  withArityUnfold config.monomorphize do withMainContext do
     let goal ← getMainTarget
-    let typ ← toCanonical goal premises
+    let typ ← toCanonical goal premises config
 
     if config.debug then
       Elab.admitGoal (← getMainGoal)

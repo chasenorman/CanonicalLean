@@ -3,97 +3,13 @@ import Canonical.Util
 import Canonical.Monomorphize
 import Canonical.Reduction
 import Canonical.Simp
+import Canonical.TranslationUtil
 import Lean
 
 open Lean hiding Term
 open Meta Expr Std Monomorphize
 
 namespace Canonical
-
-
-structure Definition where
-  type: LOption Typ
-  arity: Arity
-  rules: Array Rule := #[]
-  neighbors: HashSet String := {}
-deriving Inhabited
-
-structure Context where
-  arities: HashMap FVarId Arity
-  noTypes: Bool := false
-
-structure State where
-  definitions: HashMap String Definition := {}
-  numTypes: Nat := 0
-
-abbrev ToCanonicalM := ReaderT Context $ StateRefT State MonoM
-
-def toVar (e : Expr) : MetaM Var := do pure { name := ← toNameString e }
-
-def setType (key : String) (typ : LOption Typ) : ToCanonicalM Unit := do
-  modify fun state => { state with definitions := state.definitions.modify key (fun x => { x with type := typ }) }
-
-def MAX_TYPES := 100
-
-/-- Some Lean Π-types cannot be converted into Canonical Π-types,
-    and are instead converted into this structure. -/
-structure Pi (A : Type u) (B : A → Type v) where
-  f : (a : A) → B a
-
-/-- Monad for maintaining visited in DFS. -/
-abbrev WithVisited := StateT (HashSet String) Id
-
-private partial def cyclicHelper (g : HashMap String Definition) (u : String)
-    (stack : HashSet String) : WithVisited Bool := do
-  if stack.contains u then
-    pure true
-  else if (← get).contains u then
-    pure false
-  else
-    modify (·.insert u)
-    g[u]!.neighbors.toList.anyM (λ v => cyclicHelper g v (stack.insert u))
-
-/-- Determines whether the `neigbors` adjacency arrays in `g` are cyclic. -/
-def cyclic (g : HashMap String Definition) : Bool :=
-  (g.toList.anyM (λ (⟨u, _⟩ : String × Definition) => cyclicHelper g u {})).run' {}
-
-/-- Adds an edge to `g` corresponding to the lexicographic path ordering. -/
-partial def withConstraint (lhs rhs : Spine) (g : HashMap String Definition) : Option (HashMap String Definition) :=
-  (g.get? lhs.head).bind (fun defn =>
-    if !g.contains rhs.head then
-      g
-    else if lhs.head == rhs.head then
-      (lhs.args.zip rhs.args).firstM (fun ⟨l, r⟩ => withConstraint l.spine r.spine g)
-    else
-      g.insert lhs.head { defn with neighbors := defn.neighbors.insert rhs.head }
-  )
-
-/-- Adds termination constraints for `rules` in the form of edges in `g`. -/
-def addConstraints (rules : Array Rule) : ToCanonicalM Bool := do
-  let g := (← get).definitions
-  if let some g := rules.foldlM (fun g rule => withConstraint rule.lhs rule.rhs g) g then
-    if !cyclic g then do
-      modify fun state => { state with definitions := g }
-      return true
-  return false
-
-def elimSpecial (e : Expr) : MetaM Expr := do
-  withApp e fun fn args =>
-    match fn with
-    | forallE name type body info => do
-      assert! args.isEmpty
-      let l2 ← withLocalDecl name info type fun fvar => getLevel (body.instantiate1 fvar)
-      return (mkApp2 (.const ``Pi [← getLevel type, l2]) type (.lam name type body info))
-    | lit l => do
-      assert! args.isEmpty
-      if let .natVal n := l then
-        if n <= 5 then
-          return rawRawNatLit n
-      return e
-    | proj type idx struct => do
-      let info := getStructureInfo (← getEnv) type
-      return mkAppN (← mkProjection struct info.fieldNames[idx]!) args
-    | _ => return e
 
 mutual
 
@@ -125,7 +41,9 @@ mutual
       return { params, spine := ← toSpine (← whnf e) }
 
   partial def toSpine (e : Expr) : ToCanonicalM Spine := do
-    withApp (← preprocessMono (← elimSpecial e)) fun fn args => do
+    let e ← elimSpecial e
+    let e ← if (← read).config.monomorphize then preprocessMono e else pure e
+    withApp e fun fn args => do
       let (head, type) ← toHead fn
       let arity ← match fn with
       | fvar id => do
@@ -275,42 +193,45 @@ def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
 
   for const in premises do
     let info ← getConstInfo const
-    if (← getBinders info.type).contains .instImplicit then
-      for ⟨expr, idx⟩ in (← monomorphizeImpl const).zipIdx do
-        let monoName := Name.mkSimple ((const.num idx).toStringWithSep "_" true)
-        let mvar := (← mkFreshExprMVar (← inferType expr) .syntheticOpaque monoName).mvarId!
-        mvar.assign expr
-        let (mvarName, mvarType) ← toHead (.mvar mvar)
-        let _ ← define mvarName.toString mvarType
-        -- TODO what if these can be registered as reduction rules?
-        continue
+    if (← read).config.monomorphize then
+      if (← getBinders info.type).contains .instImplicit then
+        for ⟨expr, idx⟩ in (← monomorphizeImpl const).zipIdx do
+          let monoName := Name.mkSimple ((const.num idx).toStringWithSep "_" true)
+          let mvar := (← mkFreshExprMVar (← inferType expr) .syntheticOpaque monoName).mvarId!
+          mvar.assign expr
+          let (mvarName, mvarType) ← toHead (.mvar mvar)
+          let _ ← define mvarName.toString mvarType
+          -- TODO what if these can be registered as reduction rules?
+          continue
 
-    if let some rule ← toRule #[const.toString] info.type false then
-      if ← addConstraints #[rule] then
-        modify fun s => { s with
-          definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
-            rules := defn.rules.push rule
+    if (← read).config.simp then
+      if let some rule ← toRule #[const.toString] info.type false then
+        if ← addConstraints #[rule] then
+          modify fun s => { s with
+            definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
+              rules := defn.rules.push rule
+            }
           }
-        }
-        continue
+          continue
 
     let _ ← defineConst const
 
   let typ ← toTyp goal
 
-  let mut attempted ← getConstants
-  while ← consumeDirty do
-    let thms ← getRelevantSimpTheorems (← getConstants)
-    for thm in thms do
-      if !attempted.contains thm then
-        attempted := attempted.insert thm
-        if let some rule ← toRule #[thm.toString] (← getConstInfo thm).type false then
-          if ← addConstraints #[rule] then
-            modify fun s => { s with
-              definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
-                rules := defn.rules.push rule
+  if (← read).config.simp then
+    let mut attempted ← getConstants
+    while ← consumeDirty do
+      let thms ← getRelevantSimpTheorems (← getConstants)
+      for thm in thms do
+        if !attempted.contains thm then
+          attempted := attempted.insert thm
+          if let some rule ← toRule #[thm.toString] (← getConstInfo thm).type false then
+            if ← addConstraints #[rule] then
+              modify fun s => { s with
+                definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
+                  rules := defn.rules.push rule
+                }
               }
-            }
 
   let lets : Array (Let × Option Typ) :=
     lets ++ (← get).definitions.toArray.map fun ⟨name, defn⟩ => ({ name, rules := defn.rules }, defn.type.toOption)
@@ -322,13 +243,12 @@ def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
     lets := lets.map Prod.fst ++ typ.lets
   }
 
-def toCanonical (goal : Expr) (premises : Array Name) : MetaM Typ := do
+def toCanonical (goal : Expr) (premises : Array Name) (config : CanonicalConfig) : MetaM Typ := do
   let lctx ← getLCtx
   (((toCanonical_ goal premises).run
     {
       arities := ← lctx.foldlM (fun arities decl => do
         pure (arities.insert decl.fvarId (← typeArity decl.type)))
-          (.emptyWithCapacity lctx.size)
+          (.emptyWithCapacity lctx.size), config
     }).run' { }).run'
-      { globalFVars := .ofArray lctx.getFVarIds }
-    -- TODO ofNat special case?
+      { globalFVars := .ofArray lctx.getFVarIds, constants := .ofList [``OfNat.ofNat] }

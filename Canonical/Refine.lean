@@ -28,7 +28,7 @@ open Server RequestM in
 def getRefinementStr (params : InsertParams) : RequestM (RequestTask String) :=
   withWaitFindSnapAtPos params.pos fun snap => do runTermElabM snap do
     let data := params.rpcData.val
-    withLCtx' data.lctx do withArityUnfold do withOptions applyOptions do
+    withLCtx' data.lctx do withArityUnfold true /- TODO -/ do withOptions applyOptions do
       let expr ← fromCanonical (← getRefinement) data.goal
       let tm ← Lean.Meta.Tactic.TryThis.delabToRefinableSyntax expr
       let stx ← `(tactic| refine $tm)

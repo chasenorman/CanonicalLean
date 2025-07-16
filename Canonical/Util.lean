@@ -46,14 +46,19 @@ partial def hidesForall (e : Expr) : MetaM Bool := do
   | .forallE _ _ _ _ => pure true
   | _ => pure false
 
-def canUnfold (_cfg : Config) (info : ConstantInfo) : CoreM Bool := do
-  if (← isReducible info.name) || info.name == ``OfNat.ofNat then return true else
-  if isGlobalInstance (← getEnv) info.name &&
-    (← (isClass? (info.type)).run' {}) == some `OfNat then
-    return true
-  if let some value := info.value? then
-    return ← (hidesForall value).run' {}
-  else return false
+def canUnfold (monomorphize : Bool) (cfg : Config) (info : ConstantInfo) : CoreM Bool := do
+  match cfg.transparency with
+  | .all => return true
+  | .default => return !(← isIrreducible info.name)
+  | m =>
+    if (← isReducible info.name) then
+      return true
+    else if m == .instances && isGlobalInstance (← getEnv) info.name &&
+      (!monomorphize || (← (isClass? (info.type)).run' {}) == some `OfNat) then
+      return true
+    else if let some value := info.value? then
+      return ← (hidesForall value).run' {}
+    else return false
 
 def isRecursive (e : Expr) : MetaM Bool := do
   let env ← getEnv
@@ -65,8 +70,8 @@ def rawRawNatLit : Nat → Expr
 | n + 1 => .app (.const ``Nat.succ []) (rawRawNatLit n)
 
 variable [MonadControlT MetaM n] [Monad n]
-@[inline] def withArityUnfold (e : n α) : n α :=
-  withReducibleAndInstances (withCanUnfoldPred canUnfold e)
+@[inline] def withArityUnfold (monomorphize : Bool) (e : n α) : n α :=
+  withReducibleAndInstances (withCanUnfoldPred (canUnfold monomorphize) e)
 
 def printForce (s : String) : IO Unit := do
   let handle ← IO.FS.Handle.mk "output.txt" IO.FS.Mode.append
