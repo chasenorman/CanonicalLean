@@ -30,10 +30,19 @@ structure Definition where
   neighbors: HashSet String := {}
 deriving Inhabited
 
+inductive Polarity where
+| premise
+| goal
+
+def flip : Polarity → Polarity
+| .premise => .goal
+| .goal => .premise
+
 structure Context where
   arities: HashMap FVarId Arity
   noTypes: Bool := false
   config: CanonicalConfig
+  polarity: Polarity := .goal
 
 structure State where
   definitions: HashMap String Definition := {}

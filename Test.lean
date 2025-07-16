@@ -1,4 +1,6 @@
 import Canonical.Main
 
-theorem add_comm (n m : Nat) : n + m = m + n := by
-  canonical
+axiom add_comm' [Add X] (n m : X) : n + m = m + n
+
+theorem add_comm [Add X] (n m : X) : n + m = m + n := by
+  canonical +debug [add_comm']

@@ -17,11 +17,17 @@ mutual
     forallTelescopeReducing e (whnfType := true) fun xs body => do
       let params ← xs.mapM (toVar ·)
       let ids := xs.map (·.fvarId!)
-      let types ← ids.mapM (·.getType)
-      let arities ← (ids.zip types).mapM (fun ⟨id, type⟩ => do pure (id, ← typeArity type))
+      let arities ← ids.mapM (fun id => do pure (id, ← typeArity (← id.getType)))
       withReader (fun ctx => { ctx with arities := ctx.arities.insertMany arities } ) do
-        let paramTypes ← types.mapM (fun type => do pure (some (← toTyp type)))
+        let paramTypes ← withReader (fun ctx => { ctx with polarity := flip ctx.polarity }) do
+          ids.mapM toBind
+
         return { paramTypes, params, spine := ← toSpine body }
+
+  partial def toBind (id : FVarId) : ToCanonicalM (Option Typ) := do
+    if (← id.getBinderInfo).isInstImplicit && (← read).config.monomorphize && (← read).polarity matches .premise then
+      return none
+    return some (← toTyp (← id.getType))
 
   partial def toTerm (e : Expr) (type : Expr) (arities : List Arity) (params : Array Var := #[]) : ToCanonicalM Term := do
     match ← whnf type with
@@ -178,60 +184,65 @@ mutual
 
 end
 
-def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
-  let lets : Array (Let × Option Typ) := ← (← getLCtx).foldlM (fun lets decl => do
-    if !decl.isAuxDecl then
-      let (name, type) ← toHead decl.toExpr
-      if let some value := decl.value? then
-        let rule := defRule name.toString (← toTerm value type (← typeArity type).params.toList)
-        pure (lets.push ⟨{ name := name.toString, rules := #[rule] }, none⟩)
-      else
-        let type ← toTyp type
-        pure (lets.push ⟨{ name := name.toString }, some type⟩)
-    else pure lets
-  ) #[]
+def definePremise (name : Name) : ToCanonicalM Unit := do
+  let info ← getConstInfo name
+  if (← read).config.monomorphize then
+    if (← getBinders info.type).contains .instImplicit then
+      for ⟨expr, idx⟩ in (← monomorphizeImpl name).zipIdx do
+        let monoName := Name.mkSimple ((name.num idx).toStringWithSep "_" true)
+        let mvar := (← mkFreshExprMVar (← inferType expr) .syntheticOpaque monoName).mvarId!
+        mvar.assign expr
+        let (mvarName, mvarType) ← toHead (.mvar mvar)
+        let _ ← define mvarName.toString mvarType
+        -- TODO what if these can be registered as reduction rules?
+        return
 
-  for const in premises do
-    let info ← getConstInfo const
-    if (← read).config.monomorphize then
-      if (← getBinders info.type).contains .instImplicit then
-        for ⟨expr, idx⟩ in (← monomorphizeImpl const).zipIdx do
-          let monoName := Name.mkSimple ((const.num idx).toStringWithSep "_" true)
-          let mvar := (← mkFreshExprMVar (← inferType expr) .syntheticOpaque monoName).mvarId!
-          mvar.assign expr
-          let (mvarName, mvarType) ← toHead (.mvar mvar)
-          let _ ← define mvarName.toString mvarType
-          -- TODO what if these can be registered as reduction rules?
-          continue
-
-    if (← read).config.simp then
-      if let some rule ← toRule #[const.toString] info.type false then
-        if ← addConstraints #[rule] then
-          modify fun s => { s with
-            definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
-              rules := defn.rules.push rule
-            }
+  if (← read).config.simp then
+    if let some rule ← toRule #[name.toString] info.type false then
+      if ← addConstraints #[rule] then
+        modify fun s => { s with
+          definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
+            rules := defn.rules.push rule
           }
-          continue
+        }
+        return
 
-    let _ ← defineConst const
+  let _ ← defineConst name
+
+def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
+  let lets : Array (Let × Option Typ) := ← withReader (fun ctx => { ctx with polarity := .premise }) do
+    (← getLCtx).foldlM (fun lets decl => do
+      if !decl.isAuxDecl then
+        let (name, type) ← toHead decl.toExpr
+        if let some value := decl.value? then
+          let rule := defRule name.toString (← toTerm value type (← typeArity type).params.toList)
+          pure (lets.push ⟨{ name := name.toString, rules := #[rule] }, none⟩)
+        else
+          pure (lets.push ⟨{ name := name.toString }, ← toBind decl.fvarId⟩)
+      else pure lets
+    ) #[]
 
   let typ ← toTyp goal
 
+  withReader (fun ctx => { ctx with polarity := .premise }) do
+    for premise in premises do
+      let _ ← definePremise premise
+
   if (← read).config.simp then
-    let mut attempted ← getConstants
-    while ← consumeDirty do
-      let thms ← getRelevantSimpTheorems (← getConstants)
-      for thm in thms do
-        if !attempted.contains thm then
-          attempted := attempted.insert thm
-          if let some rule ← toRule #[thm.toString] (← getConstInfo thm).type false then
-            if ← addConstraints #[rule] then
-              modify fun s => { s with
-                definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
-                  rules := defn.rules.push rule
+    withReader (fun ctx => { ctx with polarity := .premise }) do
+      let mut attempted ← getConstants
+      while ← consumeDirty do
+        let thms ← getRelevantSimpTheorems (← getConstants)
+        for thm in thms do
+          if !attempted.contains thm then
+            attempted := attempted.insert thm
+            if let some rule ← toRule #[thm.toString] (← getConstInfo thm).type false then
+              if ← addConstraints #[rule] then
+                modify fun s => { s with
+                  definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
+                    rules := defn.rules.push rule
+                  }
                 }
-              }
 
   let lets : Array (Let × Option Typ) :=
     lets ++ (← get).definitions.toArray.map fun ⟨name, defn⟩ => ({ name, rules := defn.rules }, defn.type.toOption)
