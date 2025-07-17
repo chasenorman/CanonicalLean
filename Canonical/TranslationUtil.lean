@@ -20,6 +20,7 @@ structure CanonicalConfig where
   refine: Bool := false
   simp: Bool := true
   monomorphize: Bool := true
+  premises: Bool := false
 
 declare_config_elab canonicalConfig CanonicalConfig
 

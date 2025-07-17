@@ -4,7 +4,7 @@ import Canonical.Refine
 
 namespace Canonical
 
-open Lean Parser Tactic Meta Elab Tactic Core
+open Lean Parser Tactic Meta Elab Tactic Core PremiseSelection
 
 /-- The return type of Canonical, with the generated `terms`. -/
 structure CanonicalResult where
@@ -31,7 +31,7 @@ syntax premises := " [" withoutPosition(term,*,?) "]"
 
 /-- Canonical exhaustively searches for terms in dependent type theory. -/
 elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig premises_syntax:(premises)? : tactic => do
-  let premises ← if let some premises := premises_syntax then
+  let mut premises ← if let some premises := premises_syntax then
     match premises with
     | `(premises| [$args,*]) => args.getElems.raw.mapM resolveGlobalConstNoOverload
     | _ => Elab.throwUnsupportedSyntax
@@ -40,7 +40,15 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
   let timeout := if let some timeout := timeout_syntax then timeout.getNat else 5
 
   let config ← canonicalConfig config
-  let premises := if config.pi then premises.push ``Pi else premises
+  if config.pi then
+    premises := premises.push ``Pi
+
+  if config.premises then
+    let found ← select (← getMainGoal)
+    let found := found.insertionSort (fun a b => a.score > b.score)
+    let found := found.map (fun x => x.name)
+    let found := found.take 3
+    premises := premises ++ found
 
   withArityUnfold config.monomorphize do withMainContext do
     let goal ← getMainTarget

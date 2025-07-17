@@ -27,7 +27,9 @@ mutual
   partial def toBind (id : FVarId) : ToCanonicalM (Option Typ) := do
     if (← id.getBinderInfo).isInstImplicit && (← read).config.monomorphize then
       match (← read).polarity with
-      | .premise => return none
+      | .premise =>
+        let _ ← registerPremise id
+        return none
       | .goal => return some (← defineInstance)
     return some (← toTyp (← id.getType))
 

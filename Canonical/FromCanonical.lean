@@ -73,8 +73,9 @@ mutual
       let names := t.params.map (fun v => v.name)
       modify (·.insertMany (names.zip ids))
 
-      let result ← if t.spine.head == "<synthInstance>" then
-        synthInstance body
+      let result ← if t.spine.head == "<synthInstance>" then do
+        if let .some result ← trySynthInstance body then pure result
+          else pure (← mkFreshExprMVar none)
       else mkLambdaFVars xs (← fromSpine t.spine)
 
       let premiseRules := if ← t.spine.premiseRules.allM (fun s => do isRflTheorem s.toName) then #[] else t.spine.premiseRules

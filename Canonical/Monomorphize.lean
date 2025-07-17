@@ -49,6 +49,12 @@ def addConstants (names : NameSet) : MonoM Unit := do
 def getConstants : MonoM NameSet := do
   return (← get).constants
 
+def registerPremise (id : FVarId) : MonoM Unit := do
+  assert! (← id.getBinderInfo).isInstImplicit
+  if (← get).globalFVars.contains id then
+    let type ← id.getType
+    modify fun s => { s with given := s.given.insert ⟨type, []⟩}
+
 def consumeDirty : MonoM Bool := do
   let s ← get
   modify fun s => { s with dirty := false }
@@ -144,7 +150,9 @@ partial def preprocessMono (e : Expr) : MonoM Expr := do
             }
             let _ ← addConstants skeleton.getUsedConstantsAsSet
             let success ← isDefEq skeleton e
-            assert! success
+            if !success then
+              logWarning s!"Failed to monomorphize {fn}"
+              return e
             return ← instantiateMVars (mkAppN (.mvar mvar) mvars)
     return e
 
