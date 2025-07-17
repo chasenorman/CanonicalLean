@@ -194,6 +194,18 @@ mutual
 
 end
 
+def registerSimpPremise (attribution : String) (type : Expr) : ToCanonicalM Bool := do
+  if (← read).config.simp then
+    if let some rule ← toRule #[attribution] type false then
+      if ← addConstraints #[rule] then
+        modify fun s => { s with
+          definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
+            rules := defn.rules.push rule
+          }
+        }
+        return true
+  return false
+
 def definePremise (name : Name) : ToCanonicalM Unit := do
   let info ← getConstInfo name
   if (← read).config.monomorphize then
@@ -203,21 +215,14 @@ def definePremise (name : Name) : ToCanonicalM Unit := do
         let mvar := (← mkFreshExprMVar (← inferType expr) .syntheticOpaque monoName).mvarId!
         mvar.assign expr
         let (mvarName, mvarType) ← toHead (.mvar mvar)
-        let _ ← define mvarName.toString mvarType
-        -- TODO what if these can be registered as reduction rules?
+
+        if !(← registerSimpPremise name.toString mvarType) then
+          let _ ← define mvarName.toString mvarType
+
         return
 
-  if (← read).config.simp then
-    if let some rule ← toRule #[name.toString] info.type false then
-      if ← addConstraints #[rule] then
-        modify fun s => { s with
-          definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
-            rules := defn.rules.push rule
-          }
-        }
-        return
-
-  let _ ← defineConst name
+  if !(← registerSimpPremise name.toString info.type) then
+    let _ ← defineConst name
 
 def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
   let lets : Array (Let × Option Typ) := ← withReader (fun ctx => { ctx with polarity := .premise }) do

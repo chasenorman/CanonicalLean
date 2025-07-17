@@ -52,8 +52,8 @@ def fromHead (s : String) : FromCanonicalM (Expr × Expr) := do
     return (.sort l, .sort l.succ)
   else if let some n := s.toNat? then
     return (mkNatLit n, .const ``Nat [])
-  else if let some s := decodeStrLit s then
-    return (mkStrLit s, .const ``String [])
+  else if s.startsWith "\"" && s.endsWith "\"" then
+    return (mkStrLit ((s.drop 1).dropRight 1), .const ``String [])
   else if let some info := (← getEnv).find? s.toName then
     return (← mkConstWithFreshMVarLevels info.name, info.type)
   else if let some id := (← get).get? s then

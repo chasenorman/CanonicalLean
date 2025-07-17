@@ -33,7 +33,7 @@ def toHead : Expr → MetaM (Name × Expr)
 | lit l =>
   let name : Name := match l with
   | .natVal n => .num .anonymous n
-  | .strVal s => .str .anonymous s.quote
+  | .strVal s => .str .anonymous s!"\"{s}\""
   return (name, l.type)
 | _ => unreachable!
 
