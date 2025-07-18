@@ -10,6 +10,7 @@ open Std Meta Syntax
 /-- When translating from Canonical, we associate names in the `Term` with corresponding Lean `FVarId`s -/
 abbrev FromCanonicalM := StateT (HashMap String FVarId) MetaM
 
+/-- Converts instances of `Pi.mk` and `Pi.f` at the head into λ-expressions and applications, respectively. -/
 partial def removePi (t : Term) : Term :=
   if t.spine.head == (``Pi.mk).toString then
     let body := t.spine.args[2]!
@@ -22,6 +23,7 @@ partial def removePi (t : Term) : Term :=
   else t
 
 open PrettyPrinter Delaborator SubExpr in
+/-- We use `.mdata` to store information about tactics used by Canonical. -/
 @[delab mdata.canonical]
 def delabCanonical : Delab := do
   match ← getExpr with
@@ -65,6 +67,7 @@ def fromHead (s : String) : FromCanonicalM (Expr × Expr) := do
     return (← mkFreshExprMVar none (userName := name.toName), .sort .zero)
 
 mutual
+  /-- Builds a λ-expression of type `type` following the parameters of `t`. -/
   partial def fromTerm (t : Term) (type : Expr) : FromCanonicalM Expr := do
     forallTelescopeReducing type fun xs body => do
       let t := removePi t
@@ -85,6 +88,7 @@ mutual
         return .mdata (KVMap.empty.insert `canonical (.ofSyntax (toSyntax premiseRules goalRules))) result
       else return result
 
+  /-- Builds an application expression from `s`. -/
   partial def fromSpine (s : Spine) : FromCanonicalM Expr := do
     if s.head == (``Pi).toString then
       let binderType ← fromTerm s.args[0]! (.sort (← mkFreshLevelMVar))
@@ -95,6 +99,7 @@ mutual
     let (fn, fnType) ← fromHead s.head
     return ← whnf (mkAppN fn (← fromApp s.args.toList fnType).toArray)
 
+  /-- Recursively translates the arguments of a head symbol with type `type`.  -/
   partial def fromApp (args : List Term) (type : Expr) : FromCanonicalM (List Expr) := do
     match ← whnf type with
     | .forallE _ binderType body _ =>
@@ -105,6 +110,7 @@ mutual
       return []
 end
 
+/-- Converts a Term `t` of type `type` to a Lean expression. -/
 def fromCanonical (t : Term) (type : Expr) : MetaM Expr := do
   return ← (fromTerm t type).run' (← (← getLCtx).foldlM (fun acc decl =>
     do pure (acc.insert (← toHead decl.toExpr).1.toString decl.fvarId)) {})

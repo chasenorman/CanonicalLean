@@ -1,12 +1,17 @@
 import Lean
 import Canonical.FromCanonical
+import Canonical.TranslationUtil
 
 namespace Canonical
 
 open Lean Elab Meta Tactic
+
+/-- Data shared between the tactic process and RPC process. -/
 structure RpcData where
   goal: Expr
+  config : CanonicalConfig
   lctx: LocalContext
+  mctx: MetavarContext
   width: Nat
   indent: Nat
   column: Nat
@@ -28,13 +33,14 @@ open Server RequestM in
 def getRefinementStr (params : InsertParams) : RequestM (RequestTask String) :=
   withWaitFindSnapAtPos params.pos fun snap => do runTermElabM snap do
     let data := params.rpcData.val
-    withLCtx' data.lctx do withArityUnfold true /- TODO -/ do withOptions applyOptions do
-      let expr ← fromCanonical (← getRefinement) data.goal
-      let tm ← Lean.Meta.Tactic.TryThis.delabToRefinableSyntax expr
-      let stx ← `(tactic| refine $tm)
-      let fmt ← Lean.PrettyPrinter.ppCategory `tactic stx
-      let str := Std.Format.pretty fmt data.width data.indent data.column
-      pure str
+    withMCtx data.mctx do withLCtx' data.lctx do
+      withArityUnfold data.config.monomorphize do withOptions applyOptions do
+        let expr ← fromCanonical (← getRefinement) data.goal
+        let tm ← Lean.Meta.Tactic.TryThis.delabToRefinableSyntax expr
+        let stx ← `(tactic| refine $tm)
+        let fmt ← Lean.PrettyPrinter.ppCategory `tactic stx
+        let str := Std.Format.pretty fmt data.width data.indent data.column
+        pure str
 
 /-- The widget for the refinement UI. -/
 @[widget_module]

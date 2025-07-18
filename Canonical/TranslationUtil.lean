@@ -13,38 +13,52 @@ namespace Canonical
 structure CanonicalConfig where
   /-- Canonical produces `count` proofs. -/
   count: USize := 1
-  /-- Provides `(A → B) : Sort` as an axiom to Canonical. -/
+  /-- Provide `(A → B) : Sort` as an axiom to Canonical. -/
   pi: Bool := false
+  /-- Print the inhabitation problem sent to Canonical. -/
   debug: Bool := false
-  /-- Opens the refinement UI. -/
+  /-- Open the refinement UI. -/
   refine: Bool := false
+  /-- Allow Canonical to use `simp`. -/
   simp: Bool := true
+  /-- Resolve typeclass instances in a preprocessing stage. -/
   monomorphize: Bool := true
+  /-- Add premises from the current premise selector. -/
   premises: Bool := false
 
 declare_config_elab canonicalConfig CanonicalConfig
 
+/-- Definition of a symbol during translation,
+    to be converted into `(Let × Option Typ)` -/
 structure Definition where
+  /-- `.undef` corresponds to a definition without translated type,
+      but may acquire one as the translation progresses. -/
   type: LOption Typ
   arity: Arity
   rules: Array Rule := #[]
   neighbors: HashSet String := {}
 deriving Inhabited
 
+/-- Whether we are translating a premise or a goal. -/
 inductive Polarity where
 | premise
 | goal
 
+/-- The opposite polarity. -/
 def flip : Polarity → Polarity
 | .premise => .goal
 | .goal => .premise
 
+/-- Reader data for `ToCanonical`. -/
 structure Context where
   arities: HashMap FVarId Arity
+  /-- All `define` invocations will set `.undef` type. -/
   noTypes: Bool := false
   config: CanonicalConfig
   polarity: Polarity := .goal
 
+/-- The `definitions` to be sent to Canonical,
+    and the number of them which have types. -/
 structure State where
   definitions: HashMap String Definition := {}
   numTypes: Nat := 0
@@ -100,6 +114,7 @@ def addConstraints (rules : Array Rule) : ToCanonicalM Bool := do
       return true
   return false
 
+/-- Convert `proj`, `lit`, and `forallE` into applications of a head symbol. -/
 def elimSpecial (e : Expr) : MetaM Expr := do
   withApp e fun fn args =>
     match fn with
@@ -118,6 +133,7 @@ def elimSpecial (e : Expr) : MetaM Expr := do
       return mkAppN (← mkProjection struct info.fieldNames[idx]!) args
     | _ => return e
 
+/-- Defines the `<synthInstance>` symbol with type `<instImplicit>`. -/
 def defineInstance : ToCanonicalM Typ := do
   let typ : Typ := { spine := { head := "<instImplicit>" } }
   modify (fun s => { s with definitions := (

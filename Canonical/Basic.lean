@@ -4,30 +4,43 @@ open Lean.Meta Lean.Elab
 
 namespace Canonical
 
+/-- A variable binding. -/
 structure Var where
   name: String
 deriving Inhabited, Repr
 
 mutual
+  /-- A let binding is a variable binding with reduction rules. -/
   structure Let extends Var where
     rules: Array Rule := #[]
   deriving Inhabited, Repr
 
+  /-- A spine is an n-ary, η-long application of a head symbol. -/
   structure Spine where
     head: String
     args: Array Term := #[]
 
+    /-- For proof reconstruction, the reduction rules applied
+        to the type of this spine. -/
     premiseRules : Array String := #[]
   deriving Inhabited, Repr
 
+  /-- A term is an n-ary, β-normal, η-long λ expression:
+      `λ params lets . spine` -/
   structure Term where
     params: Array Var := #[]
     lets: Array Let := #[]
     spine: Spine
 
+    /-- For proof reconstruction, the reduction rules applied
+        to the type of the metavariable hole. -/
     goalRules : Array String := #[]
   deriving Inhabited, Repr
 
+  /-- A reduction rule `lhs ↦ rhs`. The `attribution` will be added
+      to the `premiseRules` or `goalRules` arrays where used.
+      Canonical will not return a term that reduces according to
+      a rule that `isRedex`. -/
   structure Rule where
     lhs: Spine
     rhs: Spine
@@ -36,6 +49,7 @@ mutual
   deriving Inhabited, Repr
 end
 
+/-- A type is an n-ary Π-type: `Π params lets . toTerm` -/
 structure Typ extends Term where
   paramTypes: Array (Option Typ) := #[]
   letTypes: Array (Option Typ) := #[]

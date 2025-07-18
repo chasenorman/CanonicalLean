@@ -119,7 +119,9 @@ partial def skeleton (e : Expr) : MonoM (Option Expr) := do
           if let some skeleton ← skeleton (← exposeInstance args[i]!) then
             let _ ← registerInstance skeleton
             let success ← isDefEq metas[i]! skeleton
-            assert! success
+            if !success then
+              logWarning s!"Monomorphization failure: {e}"
+              return none
           else return none
       return ← instantiateMVars (mkAppN fn metas)
     return none

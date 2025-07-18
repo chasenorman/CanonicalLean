@@ -5,6 +5,7 @@ open Lean Meta Std DiscrTree Trie Key Expr
 
 namespace Canonical
 
+/-- Replacements for certain `@[simp]` theorems with alternative encodings. -/
 def SIMP_HARD_CODE : HashMap Name (Array Name) := .ofList [
   (`Nat.succ_eq_add_one, #[`Nat.succ.injEq]),
   (`Nat.add_zero, #[`Nat.add_zero, `Nat.add_succ, `Nat.succ_add, `Nat.add_assoc]),
@@ -14,7 +15,7 @@ def SIMP_HARD_CODE : HashMap Name (Array Name) := .ofList [
   (`Nat.pow_one, #[]),
 ]
 
-/-- Retrieves the `Origin`s in `trie` consisting only of constants in `constSet`.  -/
+/-- Retrieve the `Origin`s in `trie` consisting only of constants in `constSet`.  -/
 partial def getOrigins (constSet : NameSet) (trie : Trie SimpTheorem) : Array Origin :=
   match trie with
   | node vs children =>
@@ -25,7 +26,7 @@ partial def getOrigins (constSet : NameSet) (trie : Trie SimpTheorem) : Array Or
       | _ => true
     (vs.filterMap (fun x => if x.priority ≥ eval_prio default then some x.origin else none)) ++ filtered.flatMap (fun x => getOrigins constSet x.2)
 
-
+/-- Obtain the `@[simp]` theorems that only use constants in `constSet` on the `lhs`. -/
 def getRelevantSimpTheorems (constSet : NameSet) : MetaM (Array Name) := do
   let thms ← getSimpTheorems
   let tries ← constSet.toArray.filterMapM fun x => do

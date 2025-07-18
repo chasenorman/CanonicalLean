@@ -12,7 +12,7 @@ open Meta Expr Std Monomorphize
 namespace Canonical
 
 mutual
-
+  /-- Convert a type `Expr` `e` to a `Typ`. -/
   partial def toTyp (e : Expr) : ToCanonicalM Typ := do
     forallTelescopeReducing e (whnfType := true) fun xs body => do
       let params ← xs.mapM (toVar ·)
@@ -24,6 +24,7 @@ mutual
 
         return { paramTypes, params, spine := ← toSpine body }
 
+  /-- Obtain the `Option Typ` binder type for an `FVarId`. -/
   partial def toBind (id : FVarId) : ToCanonicalM (Option Typ) := do
     if (← id.getBinderInfo).isInstImplicit && (← read).config.monomorphize then
       match (← read).polarity with
@@ -33,6 +34,8 @@ mutual
       | .goal => return some (← defineInstance)
     return some (← toTyp (← id.getType))
 
+  /-- Translate an `Expr` `e` of type `type` to a `Term`.
+      `arities` are the expected parameter arities, `params` accumulate via recursive calls. -/
   partial def toTerm (e : Expr) (type : Expr) (arities : List Arity) (params : Array Var := #[]) : ToCanonicalM Term := do
     match ← whnf type with
     | forallE name binderType body info =>
@@ -50,6 +53,7 @@ mutual
       assert! arities.isEmpty
       return { params, spine := ← toSpine (← whnf e) }
 
+  /-- Translate an `Expr` `e` without λ bindings to a `Spine`. -/
   partial def toSpine (e : Expr) : ToCanonicalM Spine := do
     let e ← elimSpecial e
     let e ← if (← read).config.monomorphize then preprocessMono e else pure e
@@ -64,6 +68,7 @@ mutual
       | _ => define head.toString type
       return ← addArgs { head := head.toString } type args.toList arity.params.toList
 
+  /-- Apply `args` to `spine` of type `type` with parameter arities `arities`. -/
   partial def addArgs (spine : Spine) (type : Expr) (args : List Expr) (arities : List Arity) : ToCanonicalM Spine := do
     match ← whnf type with
     | forallE name binderType body info =>
@@ -88,6 +93,9 @@ mutual
       assert! args.isEmpty
       return spine
 
+  /-- Ensure that `name` is in `definitions`. If not, it is added and `onDefine` is called.
+      If the current definition of the symbol has no type, evaluate whether to add it,
+      and call `onType` after adding a type. -/
   partial def define (name : String) (type : Expr)
     (onDefine : ToCanonicalM Unit := do pure ()) (onType : ToCanonicalM Unit := do pure ()) : ToCanonicalM Arity := do
     withReader (fun ctx => { ctx with polarity := .premise }) do
@@ -110,6 +118,7 @@ mutual
         let _ ← onType
       return defn.arity
 
+  /-- Add the reduction rules for a constant symbol.  -/
   partial def onDefineConst (name : Name) : ToCanonicalM Unit := do
     let _ ← addConstant name
     let rules ← constRules name
@@ -120,6 +129,7 @@ mutual
       { defn with rules := defn.rules ++ rules }) }
     pure ()
 
+  /-- Determine the rules for constant `name` -/
   partial def constRules (name : Name) : ToCanonicalM (Array Rule) := do
     let decl ← getConstInfo name
     if ← Lean.isIrreducible name then
@@ -150,6 +160,8 @@ mutual
         return #[defRule name.toString defn]
     | _ => return #[]
 
+  /-- Auxiliary definitions, like constructors, recursors, and projections
+      are defined with the type of a constant `name`. -/
   partial def onTypeConst (name : Name) : ToCanonicalM Unit := do
     if let .inductInfo info ← getConstInfo name then
       let env ← getEnv
@@ -175,9 +187,11 @@ mutual
       else
         let _ ← defineConst (mkRecName name)
 
+  /-- `define` call specialized with `onDefineConst` and `onTypeConst` -/
   partial def defineConst (name : Name) : ToCanonicalM Arity := do
     define name.toString (← getConstInfo name).type (onDefineConst name) (onTypeConst name)
 
+  /-- Convert equality `e` to a `Rule`, with given `attribution`. -/
   partial def toRule (attribution : Array String) (e : Expr) (returnInvalid : Bool := true) : ToCanonicalM (Option Rule) :=
     forallTelescopeReducing e fun xs e =>
       (eq? e).bindM fun ⟨typ, lhs, rhs⟩ => do
@@ -194,6 +208,8 @@ mutual
 
 end
 
+/-- Attempt to include a premise of type `type` as a reduction rule, instead of a definiton.
+    Returns `true` if successful. -/
 def registerSimpPremise (attribution : String) (type : Expr) : ToCanonicalM Bool := do
   if (← read).config.simp then
     if let some rule ← toRule #[attribution] type false then
@@ -206,6 +222,7 @@ def registerSimpPremise (attribution : String) (type : Expr) : ToCanonicalM Bool
         return true
   return false
 
+/-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate. -/
 def definePremise (name : Name) : ToCanonicalM Unit := do
   let info ← getConstInfo name
   if (← read).config.monomorphize then
@@ -218,13 +235,30 @@ def definePremise (name : Name) : ToCanonicalM Unit := do
 
         if !(← registerSimpPremise name.toString mvarType) then
           let _ ← define mvarName.toString mvarType
-
-        return
+      return
 
   if !(← registerSimpPremise name.toString info.type) then
     let _ ← defineConst name
 
+def addSimpLemmas : ToCanonicalM Unit := do
+  withReader (fun ctx => { ctx with polarity := .premise }) do
+    let mut attempted ← getConstants
+    -- Adding `simp` lemmas may introduce new definitions, making more `simp` lemmas relevant.
+    while ← consumeDirty do
+      let thms ← getRelevantSimpTheorems (← getConstants)
+      for thm in thms do
+        if !attempted.contains thm then
+          attempted := attempted.insert thm
+          if let some rule ← toRule #[thm.toString] (← getConstInfo thm).type false then
+            if ← addConstraints #[rule] then
+              modify fun s => { s with
+                definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
+                  rules := defn.rules.push rule
+                }
+              }
+
 def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
+  -- Local Context
   let lets : Array (Let × Option Typ) := ← withReader (fun ctx => { ctx with polarity := .premise }) do
     (← getLCtx).foldlM (fun lets decl => do
       if !decl.isAuxDecl then
@@ -237,30 +271,19 @@ def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
       else pure lets
     ) #[]
 
+  -- Goal Type
   let typ ← toTyp goal
 
+  -- Constant Symbol Premises
   withReader (fun ctx => { ctx with polarity := .premise }) do
     for premise in premises do
       let _ ← definePremise premise
 
+  -- Simp Lemmas
   if (← read).config.simp then
-    withReader (fun ctx => { ctx with polarity := .premise }) do
-      let mut attempted ← getConstants
-      while ← consumeDirty do
-        let thms ← getRelevantSimpTheorems (← getConstants)
-        for thm in thms do
-          if !attempted.contains thm then
-            attempted := attempted.insert thm
-            if let some rule ← toRule #[thm.toString] (← getConstInfo thm).type false then
-              if ← addConstraints #[rule] then
-                modify fun s => { s with
-                  definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
-                    rules := defn.rules.push rule
-                  }
-                }
+    let _ ← addSimpLemmas
 
-  let lets : Array (Let × Option Typ) :=
-    lets ++ (← get).definitions.toArray.map fun ⟨name, defn⟩ => ({ name, rules := defn.rules }, defn.type.toOption)
+  let lets := lets ++ (← get).definitions.toArray.map fun ⟨name, defn⟩ => ({ name, rules := defn.rules }, defn.type.toOption)
 
   let _ ← exit
 
@@ -269,6 +292,7 @@ def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
     lets := lets.map Prod.fst ++ typ.lets
   }
 
+/-- Convert `goal` to a `Typ` with `premises` and all included definitions. -/
 def toCanonical (goal : Expr) (premises : Array Name) (config : CanonicalConfig) : MetaM Typ := do
   let lctx ← getLCtx
   (((toCanonical_ goal premises).run

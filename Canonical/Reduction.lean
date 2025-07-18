@@ -7,16 +7,20 @@ open Meta Std
 
 namespace Canonical
 
+/-- Placeholder for a term, not a reserved symbol. -/
 def wildcard : Term := { spine := { head := "*" } }
 
+/-- Creates an η-**short** Term applying `v` at the head. -/
 def varToTerm (v : Var) : Term := { spine := { head := v.name } }
 
 partial def containsLambda (t : Term) : Bool :=
   !t.params.isEmpty || t.spine.args.any containsLambda
 
+/-- Counts the occurrences of `v` as a head symbol in `t`. -/
 partial def count (t : Spine) (v : String) : Nat :=
   t.args.foldl (init := if t.head == v then 1 else 0) (· + count ·.spine v)
 
+/-- Filtering for candidate simp lemmas based on the `lhs`. -/
 def validSimpLemma (xs : Array Expr) (lhs : Spine) : MetaM Bool := do
   if ← xs.anyM (fun x => do pure ((← typeArity1 (← x.fvarId!.getType)) != 0)) then
     pure false -- higher order

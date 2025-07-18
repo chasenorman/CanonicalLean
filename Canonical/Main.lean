@@ -60,6 +60,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
       dbg_trace typ
       return
 
+    -- Refinement UI
     if config.refine then
       let _ ← refine typ
       Elab.admitGoal (← getMainGoal)
@@ -68,13 +69,14 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
       let range := fileMap.utf8RangeToLspRange strRange
       let width := Lean.Meta.Tactic.TryThis.getInputWidth (← getOptions)
       let (indent, column) := Lean.Meta.Tactic.TryThis.getIndentAndColumn fileMap strRange
-      let x ← Server.WithRpcRef.mk (RpcData.mk goal (← getLCtx) width indent column)
+      let x ← Server.WithRpcRef.mk (RpcData.mk goal config (← getLCtx) (← getMCtx) width indent column)
       Lean.Widget.savePanelWidgetInfo (hash refineWidget.javascript) (← getRef)
         (props := do
           let rpcData ← Server.RpcEncodable.rpcEncode x
           pure (Json.mkObj [("rpcData", rpcData), ("range", ToJson.toJson range)]))
       return
 
+    -- Run Canonical asynchronously, so that we can check for cancellation.
     checkInterrupted
     let task ← IO.asTask (prio := .dedicated)
       (canonical typ (UInt64.ofNat timeout) config.count)
