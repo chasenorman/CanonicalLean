@@ -64,8 +64,8 @@ instance : ToString Term where toString := termToString
 @[never_extract, extern "typ_to_string"] opaque typToString: @& Typ → String
 instance : ToString Typ where toString := typToString
 
-instance : ToString Rule where
-  toString r := s!"{r.lhs} ↦ {r.rhs}"
+@[never_extract, extern "rule_to_string"] opaque ruleToString: @& Rule → String
+instance : ToString Rule where toString := ruleToString
 
 /-- Saves a JSON representation of the type to the given file. -/
 @[never_extract, extern "save_to_file"] opaque save_to_file : @& Typ → String → IO Unit

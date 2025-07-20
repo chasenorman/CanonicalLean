@@ -32,7 +32,7 @@ structure MonoState where
 instance : ToString MonoState where
   toString s := s!"{s.mono.toList.map fun x => x.1}\n{s.given.toList.map fun x => x.expr}"
 
-abbrev MonoM := StateT MonoState MetaM
+abbrev MonoM := StateRefT MonoState MetaM
 
 def addConstant (name : Name) : MonoM Unit := do
   modify fun s => { s with

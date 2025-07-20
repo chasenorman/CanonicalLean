@@ -76,17 +76,17 @@ mutual
       let names := t.params.map (fun v => v.name)
       modify (·.insertMany (names.zip ids))
 
-      let result ← if t.spine.head == "<synthInstance>" then do
+      let spine ← if t.spine.head == "<synthInstance>" then do
         if let .some result ← trySynthInstance body then pure result
           else pure (← mkFreshExprMVar none)
-      else mkLambdaFVars xs (← fromSpine t.spine)
+      else fromSpine t.spine
 
       let premiseRules := if ← t.spine.premiseRules.allM (fun s => do isRflTheorem s.toName) then #[] else t.spine.premiseRules
       let goalRules := if ← t.goalRules.allM (fun s => do isRflTheorem s.toName) then #[] else t.goalRules
 
       if (!premiseRules.isEmpty || !goalRules.isEmpty) then
-        return .mdata (KVMap.empty.insert `canonical (.ofSyntax (toSyntax premiseRules goalRules))) result
-      else return result
+        return ← mkLambdaFVars xs (.mdata (KVMap.empty.insert `canonical (.ofSyntax (toSyntax premiseRules goalRules))) spine)
+      else return ← mkLambdaFVars xs spine
 
   /-- Builds an application expression from `s`. -/
   partial def fromSpine (s : Spine) : FromCanonicalM Expr := do
