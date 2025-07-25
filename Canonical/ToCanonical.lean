@@ -60,10 +60,7 @@ mutual
     withApp e fun fn args => do
       let (head, type) ← toHead fn
       let arity ← match fn with
-      | fvar id => do
-        if !(← read).arities.contains id then
-          dbg_trace head
-        pure ((← read).arities[id]!)
+      | fvar id => do pure ((← read).arities[id]!)
       | const name _ => defineConst name
       | _ => define head.toString type
       return ← addArgs { head := head.toString } type args.toList arity.params.toList
@@ -109,7 +106,7 @@ mutual
         logWarning s!"Runaway definitions! No longer defining types."
       let defineType := !(← read).noTypes && (← get).numTypes < MAX_TYPES
 
-      let defn := (← get).definitions[name]!
+      let defn := ((← get).definitions.find? name).get!
       if defn.type matches .undef && defineType then
         let _ ← setType name .none
         modify (fun state => { state with numTypes := state.numTypes + 1 })
@@ -125,8 +122,9 @@ mutual
     let success ← addConstraints rules
     if !success then
       logWarning s!"Rules {rules} for {name} are non-terminating."
-    else modify fun state => { state with definitions := state.definitions.modify name.toString (fun defn =>
-      { defn with rules := defn.rules ++ rules }) }
+    else modify fun state =>
+      let defn := (state.definitions.find? name.toString).get!
+      { state with definitions := state.definitions.insert name.toString { defn with rules := defn.rules ++ rules } }
     pure ()
 
   /-- Determine the rules for constant `name` -/
@@ -176,7 +174,8 @@ mutual
       let success ← addConstraints rules
       assert! success
       modify (fun x =>
-        let new := x.definitions.modify (`Eq).toString fun eq =>
+        let eq := (x.definitions.find? (`Eq).toString).get!
+        let new := x.definitions.insert (`Eq).toString
           { eq with rules := eq.rules ++ rules }
         { x with definitions := new }
       )
@@ -214,16 +213,18 @@ def registerSimpPremise (attribution : String) (type : Expr) : ToCanonicalM Bool
   if (← read).config.simp then
     if let some rule ← toRule #[attribution] type false then
       if ← addConstraints #[rule] then
-        modify fun s => { s with
-          definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
-            rules := defn.rules.push rule
+        modify fun s =>
+          let defn := (s.definitions.find? rule.lhs.head).get!
+          { s with
+            definitions := s.definitions.insert rule.lhs.head { defn with
+              rules := defn.rules.push rule
+            }
           }
-        }
         return true
   return false
 
 /-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate. -/
-def definePremise (name : Name) : ToCanonicalM Unit := do
+def definePremise (name : Name) (simpOnly : Bool := false) : ToCanonicalM Unit := do
   let info ← getConstInfo name
   if (← read).config.monomorphize then
     if (← getBinders info.type).contains .instImplicit then
@@ -233,11 +234,11 @@ def definePremise (name : Name) : ToCanonicalM Unit := do
         mvar.assign expr
         let (mvarName, mvarType) ← toHead (.mvar mvar)
 
-        if !(← registerSimpPremise name.toString mvarType) then
+        if !(← registerSimpPremise name.toString mvarType) && !simpOnly then
           let _ ← define mvarName.toString mvarType
       return
 
-  if !(← registerSimpPremise name.toString info.type) then
+  if !(← registerSimpPremise name.toString info.type) && !simpOnly then
     let _ ← defineConst name
 
 def addSimpLemmas : ToCanonicalM Unit := do
@@ -249,13 +250,7 @@ def addSimpLemmas : ToCanonicalM Unit := do
       for thm in thms do
         if !attempted.contains thm then
           attempted := attempted.insert thm
-          if let some rule ← toRule #[thm.toString] (← getConstInfo thm).type false then
-            if ← addConstraints #[rule] then
-              modify fun s => { s with
-                definitions := s.definitions.modify rule.lhs.head fun defn => { defn with
-                  rules := defn.rules.push rule
-                }
-              }
+          let _ ← definePremise thm true
 
 def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
   -- Local Context
@@ -283,7 +278,7 @@ def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
   if (← read).config.simp then
     let _ ← addSimpLemmas
 
-  let lets := lets ++ (← get).definitions.toArray.map fun ⟨name, defn⟩ => ({ name, rules := defn.rules }, defn.type.toOption)
+  let lets := lets ++ (← get).definitions.toList.toArray.map fun ⟨name, defn⟩ => ({ name, rules := defn.rules }, defn.type.toOption)
 
   let _ ← exit
 

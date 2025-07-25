@@ -124,13 +124,13 @@ partial def skeleton (e : Expr) : MonoM (Option Expr) := do
               return none
           else return none
       return ← instantiateMVars (mkAppN fn metas)
-    return none
+    else return none
 
 partial def preprocessMono (e : Expr) : MonoM Expr := do
   withApp e fun fn _ => do
     if let some (fn, type, _) ← asHead fn then
       let hasInstImplicit ← forallTelescopeReducing type fun xs _ =>
-        do xs.anyM fun x => return (← x.fvarId!.getBinderInfo).isInstImplicit
+        do xs.anyM fun x => do pure (← x.fvarId!.getBinderInfo).isInstImplicit
       if hasInstImplicit then
         let set := (← get).mono.getD fn []
         for ⟨id, levels, value⟩ in set do

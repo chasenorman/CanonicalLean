@@ -1,3 +1,3 @@
-import Canonical.Main
+import Canonical
 
 example : Nat := by canonical

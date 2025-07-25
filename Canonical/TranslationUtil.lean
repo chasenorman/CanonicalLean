@@ -60,7 +60,7 @@ structure Context where
 /-- The `definitions` to be sent to Canonical,
     and the number of them which have types. -/
 structure State where
-  definitions: HashMap String Definition := {}
+  definitions: AssocList String Definition := {}
   numTypes: Nat := 0
 
 abbrev ToCanonicalM := ReaderT Context $ StateRefT State MonoM
@@ -68,7 +68,8 @@ abbrev ToCanonicalM := ReaderT Context $ StateRefT State MonoM
 def toVar (e : Expr) : MetaM Var := do pure { name := ← toNameString e }
 
 def setType (key : String) (typ : LOption Typ) : ToCanonicalM Unit := do
-  modify fun state => { state with definitions := state.definitions.modify key (fun x => { x with type := typ }) }
+  modify fun state => { state with definitions := state.definitions.insert key {
+    (state.definitions.find? key).get! with type := typ } }
 
 def MAX_TYPES := 100
 
@@ -80,7 +81,7 @@ structure Pi (A : Type u) (B : A → Type v) where
 /-- Monad for maintaining visited in DFS. -/
 abbrev WithVisited := StateT (HashSet String) Id
 
-private partial def cyclicHelper (g : HashMap String Definition) (u : String)
+private partial def cyclicHelper (g : AssocList String Definition) (u : String)
     (stack : HashSet String) : WithVisited Bool := do
   if stack.contains u then
     pure true
@@ -88,15 +89,15 @@ private partial def cyclicHelper (g : HashMap String Definition) (u : String)
     pure false
   else
     modify (·.insert u)
-    g[u]!.neighbors.toList.anyM (λ v => cyclicHelper g v (stack.insert u))
+    (g.find? u).get!.neighbors.toList.anyM (λ v => cyclicHelper g v (stack.insert u))
 
 /-- Determines whether the `neigbors` adjacency arrays in `g` are cyclic. -/
-def cyclic (g : HashMap String Definition) : Bool :=
+def cyclic (g : AssocList String Definition) : Bool :=
   (g.toList.anyM (λ (⟨u, _⟩ : String × Definition) => cyclicHelper g u {})).run' {}
 
 /-- Adds an edge to `g` corresponding to the lexicographic path ordering. -/
-partial def withConstraint (lhs rhs : Spine) (g : HashMap String Definition) : Option (HashMap String Definition) :=
-  (g.get? lhs.head).bind (fun defn =>
+partial def withConstraint (lhs rhs : Spine) (g : AssocList String Definition) : Option (AssocList String Definition) :=
+  (g.find? lhs.head).bind (fun defn =>
     if !g.contains rhs.head then
       g
     else if lhs.head == rhs.head then
