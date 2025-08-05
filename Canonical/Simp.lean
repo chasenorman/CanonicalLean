@@ -36,7 +36,7 @@ def getRelevantSimpTheorems (constSet : NameSet) : MetaM (Array Name) := do
     if let .decl name _ _ := x then some name else none
   let relevant ← names.filterM fun x => do
     forallTelescopeReducing (← getConstInfo x).type fun _ body => do
-      if let some (_, lhs, _) := (eq? body) then do
+      if let some (lhs, _) := (eqOrIff? body) then do
         (lhs.getUsedConstantsAsSet.diff constSet).foldM (fun acc name => do
           pure (acc && (← getUnfoldableConst? name).isSome)
         ) true

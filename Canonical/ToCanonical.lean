@@ -29,7 +29,7 @@ mutual
     if (← id.getBinderInfo).isInstImplicit && (← read).config.monomorphize then
       match (← read).polarity with
       | .premise =>
-        let _ ← registerPremise id
+        let _ ← addFVarAsCandidate id
         return none
       | .goal => return some (← defineInstance)
     return some (← toTyp (← id.getType))
@@ -193,8 +193,8 @@ mutual
   /-- Convert equality `e` to a `Rule`, with given `attribution`. -/
   partial def toRule (attribution : Array String) (e : Expr) (returnInvalid : Bool := true) : ToCanonicalM (Option Rule) :=
     forallTelescopeReducing e fun xs e =>
-      (eq? e).bindM fun ⟨typ, lhs, rhs⟩ => do
-        forallTelescopeReducing typ fun txs _ => do
+      (eqOrIff? e).bindM fun ⟨lhs, rhs⟩ => do
+        forallTelescopeReducing (← inferType lhs) fun txs _ => do
           let arities ← (xs ++ txs).mapM (fun x => do
             let id := x.fvarId!
             pure (id, ← typeArity (← id.getType)))
@@ -227,8 +227,8 @@ def registerSimpPremise (attribution : String) (type : Expr) : ToCanonicalM Bool
 def definePremise (name : Name) (simpOnly : Bool := false) : ToCanonicalM Unit := do
   let info ← getConstInfo name
   if (← read).config.monomorphize then
-    if (← getBinders info.type).contains .instImplicit then
-      for ⟨expr, idx⟩ in (← monomorphizeImpl name).zipIdx do
+    if (← getAllBinderInfos info.type).contains .instImplicit then
+      for ⟨expr, idx⟩ in (← monomorphizeConst name).zipIdx do
         let monoName := Name.mkSimple ((name.num idx).toStringWithSep "_" true)
         let mvar := (← mkFreshExprMVar (← inferType expr) .syntheticOpaque monoName).mvarId!
         mvar.assign expr
@@ -245,7 +245,7 @@ def addSimpLemmas : ToCanonicalM Unit := do
   withReader (fun ctx => { ctx with polarity := .premise }) do
     let mut attempted ← getConstants
     -- Adding `simp` lemmas may introduce new definitions, making more `simp` lemmas relevant.
-    while ← consumeDirty do
+    while ← consumeNewConstFlag do
       let thms ← getRelevantSimpTheorems (← getConstants)
       for thm in thms do
         if !attempted.contains thm then
@@ -280,7 +280,7 @@ def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
 
   let lets := lets ++ (← get).definitions.toList.toArray.map fun ⟨name, defn⟩ => ({ name, rules := defn.rules }, defn.type.toOption)
 
-  let _ ← exit
+  let _ ← finalizeMonos
 
   return { typ with
     letTypes := lets.map Prod.snd ++ typ.letTypes,
@@ -296,4 +296,4 @@ def toCanonical (goal : Expr) (premises : Array Name) (config : CanonicalConfig)
         pure (arities.insert decl.fvarId (← typeArity decl.type)))
           (.emptyWithCapacity lctx.size), config
     }).run' { }).run'
-      { globalFVars := .ofArray lctx.getFVarIds, constants := .ofList [``OfNat.ofNat] }
+      { globalFVars := .ofArray lctx.getFVarIds, constNames := .ofList [``OfNat.ofNat] }
