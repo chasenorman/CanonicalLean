@@ -136,6 +136,7 @@ def transformMVar [Monad n] [MonadLiftT MetaM n] [MonadMCtx n] (goal : MVarId) (
 
   let lctx := { decl.lctx with decls := ← decl.lctx.decls.mapM fun decl => do decl.mapM fun decl => do
     let decl := decl.setType (← transform decl.type)
+
     if let some value := decl.value? then
       pure (decl.setValue (← transform value))
     else pure decl
@@ -315,11 +316,14 @@ structure MonoConfig where
 declare_config_elab monoConfig MonoConfig
 
 def monomorphizeTactic (goal : MVarId) (ids : Array Syntax) (config : MonoConfig) : MonoM MVarId := do
+  -- Consider instImplicit local decls.
+  for decl in ((← getMCtx).findDecl? goal).get!.lctx.decls do
+    if let some decl := decl then
+      if decl.binderInfo.isInstImplicit then
+        addFVarAsCandidate decl.fvarId
+
   -- First pass: collect `candidateInsts` and ignore the transformation result.
   let _ ← transformMVar goal fun e => Meta.transform e (pre := monoTransformStep)
-
-  -- if !config.canonicalize then
-  --   modify fun s => { s with mono := .emptyWithCapacity 0 }
 
   -- Process premises by creating all monomorphized versions.
   -- Name is the new name we create and expr is the monomorphized instance.
@@ -343,7 +347,7 @@ def monomorphizeTactic (goal : MVarId) (ids : Array Syntax) (config : MonoConfig
       monos.foldlM (fun goal mono => do
         -- Assign the metavariable to a new local decl which is assigned to the monomorphization.
         let name := ((← getMCtx).getDecl mono.id).userName
-        let noteResult ← MVarId.note goal name mono.assignment.expr
+        let noteResult ← MVarId.note goal name (mono.assignment.expr.instantiateLevelParams mono.assignment.levels (mono.assignment.levels.map (fun _ => Level.zero)))
         mono.id.assign (.fvar noteResult.1)
         pure noteResult.2
       ) goal

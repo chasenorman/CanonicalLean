@@ -27,6 +27,12 @@ def interrupted : CoreM Bool := do
   if let some tk := (← read).cancelTk? then return ← tk.isSet
   else return false
 
+/-- Metaprogramming interface for CanonicalLean. This function adds the LCtx as premises. -/
+def canonicalLean (goal : Expr) (premises : Array Name) (timeout : UInt64) (config : CanonicalConfig) : MetaM (Array Expr) := do
+  let typ ← toCanonical goal premises config
+  let result ← canonical typ timeout config.count
+  result.terms.mapM fun term => fromCanonical term goal
+
 syntax premises := " [" withoutPosition(term,*,?) "]"
 
 /-- Canonical exhaustively searches for terms in dependent type theory. -/

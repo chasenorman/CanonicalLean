@@ -20,6 +20,8 @@ def isDefEqForce (u v : Expr) : MetaM Bool := do
   | app f a, app f' a' => isDefEqForce f f' <&&> isDefEqForce a a'
   | _, _ => isDefEqGuarded u v
 
+/-- If `e` is a structure, produces expressions for the projections.
+    Returns a callback which takes expressions for the projections and returns a structure again. -/
 def destruct1 (e : Expr) (typ : Expr) : MetaM (Option (Array Expr × (Array Expr → MetaM Expr))) := do
   let (fn, args) := getAppFnArgs (← whnf typ)
   if STRUCTURES.contains fn then
