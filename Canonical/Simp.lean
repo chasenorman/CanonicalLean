@@ -12,7 +12,7 @@ def SIMP_HARD_CODE : HashMap Name (Array Name) := .ofList [
   (`Nat.mul_one, #[]),
   (`Nat.one_mul, #[`Nat.succ_mul, `Nat.mul_assoc]),
   (`Nat.one_pow, #[`Nat.pow_succ, `Nat.pow_add, `Nat.mul_pow]),
-  (`Nat.pow_one, #[]),
+  (`Nat.pow_one, #[])
 ]
 
 /-- Retrieve the `Origin`s in `trie` consisting only of constants in `constSet`.  -/
@@ -35,8 +35,9 @@ def getRelevantSimpTheorems (constSet : NameSet) : MetaM (Array Name) := do
   let names := origins.filterMap fun x =>
     if let .decl name _ _ := x then some name else none
   let relevant ← names.filterM fun x => do
-    forallTelescopeReducing (← getConstInfo x).type fun _ body => do
-      if let some (lhs, _) := (eqOrIff? body) then do
+    forallTelescopeReducing (← getConstInfo x).type fun xs body => do
+      if !xs.all (fun x => body.containsFVar x.fvarId!) then pure false else
+      if let some (_, lhs, _) := (eq? body) then do
         (lhs.getUsedConstantsAsSet.diff constSet).foldM (fun acc name => do
           pure (acc && (← getUnfoldableConst? name).isSome)
         ) true

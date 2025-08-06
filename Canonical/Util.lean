@@ -4,6 +4,10 @@ open Lean Meta Expr Name
 
 namespace Canonical
 
+def UNFOLD_HARD_CODE : NameSet := .ofList [
+  `Set.instMembership, `Set.Mem, `setOf
+]
+
 /-- The arity of a function symbol and the arity of its parameters, recursively. -/
 structure Arity where
   params : Array Arity := #[]
@@ -55,7 +59,7 @@ def canUnfold (monomorphize : Bool) (cfg : Config) (info : ConstantInfo) : CoreM
   | .all => return true
   | .default => return !(← isIrreducible info.name)
   | m =>
-    if (← isReducible info.name) then
+    if (← isReducible info.name) || (UNFOLD_HARD_CODE.contains info.name) then
       return true
     -- If `monomorphize`, we only reduce `OfNat` instances.
     else if m == .instances && isGlobalInstance (← getEnv) info.name &&

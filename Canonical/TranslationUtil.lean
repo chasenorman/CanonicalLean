@@ -135,8 +135,8 @@ def elimSpecial (e : Expr) : MetaM Expr := do
     | _ => return e
 
 /-- Defines the `<synthInstance>` symbol with type `<instImplicit>`. -/
-def defineInstance : ToCanonicalM Typ := do
+def defineInstance (inhabited : Bool := true) : ToCanonicalM Typ := do
   let typ : Typ := { spine := { head := "<instImplicit>" } }
   modify (fun s => { s with definitions := (
-    s.definitions.insert "<instImplicit>" { arity := {}, type := .none }).insert "<synthInstance>" { arity := {}, type := .some typ } })
-  return typ
+    (s.definitions.insert "<instImplicit>" { arity := {}, type := .none }).insert "<synthInstance>" { arity := {}, type := .some typ } ).insert "<instUninhabited>" { arity := {}, type := .none } })
+  return if inhabited then typ else { spine := { head := "<instUninhabited>" } }

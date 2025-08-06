@@ -19,19 +19,20 @@ mutual
       let ids := xs.map (·.fvarId!)
       let arities ← ids.mapM (fun id => do pure (id, ← typeArity (← id.getType)))
       withReader (fun ctx => { ctx with arities := ctx.arities.insertMany arities } ) do
+        let universal := body.getAppFn.hasAnyFVar (fun x => xs.contains (.fvar x))
         let paramTypes ← withReader (fun ctx => { ctx with polarity := flip ctx.polarity }) do
-          ids.mapM toBind
+          ids.mapM (fun x => toBind x !universal)
 
         return { paramTypes, params, spine := ← toSpine body }
 
   /-- Obtain the `Option Typ` binder type for an `FVarId`. -/
-  partial def toBind (id : FVarId) : ToCanonicalM (Option Typ) := do
+  partial def toBind (id : FVarId) (inhabited : Bool := true) : ToCanonicalM (Option Typ) := do
     if (← id.getBinderInfo).isInstImplicit && (← read).config.monomorphize then
       match (← read).polarity with
       | .premise =>
         let _ ← addFVarAsCandidate id
         return none
-      | .goal => return some (← defineInstance)
+      | .goal => return some (← defineInstance inhabited)
     return some (← toTyp (← id.getType))
 
   /-- Translate an `Expr` `e` of type `type` to a `Term`.
