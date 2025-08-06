@@ -6,8 +6,6 @@ https://github.com/user-attachments/assets/ec13ad85-7d09-4a32-9c73-3b5b501722a4
 
 ## Installation
 
-Canonical is available for Lean `v4.21.0`.
-
 Add the following dependency to your `lakefile.toml`:
 ```
 [[require]]
