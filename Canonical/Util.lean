@@ -5,7 +5,7 @@ open Lean Meta Expr Name
 namespace Canonical
 
 def UNFOLD_HARD_CODE : NameSet := .ofList [
-  `Set.instMembership, `Set.Mem, `setOf, `instLENat
+  `Set.instMembership, `Set.Mem, `setOf, `instLENat, `Function.comp
 ]
 
 /-- The arity of a function symbol and the arity of its parameters, recursively. -/
