@@ -5,7 +5,7 @@ open Lean Meta Expr Name
 namespace Canonical
 
 def UNFOLD_HARD_CODE : NameSet := .ofList [
-  `Set.instMembership, `Set.Mem, `setOf, `instLENat, `Function.comp
+  `Set.instMembership, `Set.Mem, `setOf, `instLENat
 ]
 
 /-- The arity of a function symbol and the arity of its parameters, recursively. -/
@@ -24,6 +24,9 @@ partial def typeArity (e : Expr) : MetaM Arity := do
 /-- The number of parameters in type `e`. -/
 partial def typeArity1 (e : Expr) : MetaM Nat := do
   forallTelescopeReducing e fun xs _ => return xs.size
+
+/-- Indicator for STAR type. -/
+@[reducible] def STAR (α : Sort u) : Sort u := α
 
 /-- Given a head symbol `Expr`, returns a `Name` for serializing and its type. -/
 def toHead : Expr → MetaM (Name × Expr)
@@ -59,10 +62,12 @@ def canUnfold (monomorphize : Bool) (cfg : Config) (info : ConstantInfo) : CoreM
   | .all => return true
   | .default => return !(← isIrreducible info.name)
   | m =>
-    if (← isReducible info.name) || (UNFOLD_HARD_CODE.contains info.name) then
+    let env ← getEnv
+    if (← isReducible info.name) || (UNFOLD_HARD_CODE.contains info.name)
+      || (Compiler.getInlineAttribute? env info.name matches .some .inline) then
       return true
     -- If `monomorphize`, we only reduce `OfNat` instances.
-    else if m == .instances && isGlobalInstance (← getEnv) info.name &&
+    else if m == .instances && isGlobalInstance env info.name &&
       (!monomorphize || (← (isClass? (info.type)).run' {}) == some `OfNat) then
       return true
     else if let some value := info.value? then
@@ -98,3 +103,16 @@ def applyOptions : Options → Options :=
   (pp.motives.all.set · true |>
   (pp.coercions.set · false |>
   (pp.unicode.fun.set · true))))
+
+def dneg (Goal : Sort u) (destruct : (Destruct : STAR (Sort u)) → (Goal → Destruct) → Destruct) : Goal :=
+  destruct Goal fun a ↦ a
+
+def identity (name : Name) (e : Expr) : Expr := .lam name e (.bvar 0) .default
+
+def apply (e : Expr) (args : List Expr) : Expr :=
+  match args with
+  | [] => e
+  | arg :: args => match e with
+    | .lam _name _type body _info =>
+      apply (body.instantiate1 arg) args
+    | _ => panic! "apply: expected a lambda, got {e}"

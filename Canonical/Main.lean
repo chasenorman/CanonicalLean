@@ -1,6 +1,8 @@
 import Canonical.ToCanonical
 import Canonical.FromCanonical
 import Canonical.Refine
+import Canonical.Destruct
+import Canonical.Preprocess
 
 namespace Canonical
 
@@ -56,8 +58,11 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
     let found := found.take 3
     premises := premises ++ found
 
-  withArityUnfold config.monomorphize do withMainContext do
-    let goal ← getMainTarget
+  let (goal, reconstruct) ← preprocess (← getMainGoal) config
+
+  withArityUnfold config.monomorphize do goal.withContext do
+    let goal ← goal.getType
+
     let typ ← toCanonical goal premises config
 
     if config.debug then
@@ -94,6 +99,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
 
     let result ← IO.ofExcept task.get
     let proofs ← result.terms.mapM fun term => fromCanonical term goal
+    let proofs ← proofs.mapM (fun x => reconstruct x)
 
     if proofs.isEmpty then
       match premises_syntax with
@@ -102,9 +108,10 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
         | none => throwError "No proof found. Change timeout to `n` with `canonical n`"
       | none => throwError "No proof found. Supply constant symbols with `canonical [name, ...]`"
 
-    withOptions applyOptions do
-      Elab.admitGoal (← getMainGoal)
-      if h : proofs.size = 1 then
-        Meta.Tactic.TryThis.addExactSuggestion (← getRef) proofs[0]
-      else
-        Meta.Tactic.TryThis.addExactSuggestions (← getRef) proofs
+    (← getMainGoal).withContext do
+      withOptions applyOptions do
+        Elab.admitGoal (← getMainGoal)
+        if h : proofs.size = 1 then
+          Meta.Tactic.TryThis.addExactSuggestion (← getRef) proofs[0]
+        else
+          Meta.Tactic.TryThis.addExactSuggestions (← getRef) proofs

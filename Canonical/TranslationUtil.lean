@@ -23,6 +23,8 @@ structure CanonicalConfig where
   simp: Bool := true
   /-- Resolve typeclass instances in a preprocessing stage. -/
   monomorphize: Bool := true
+  /-- Unpacks structure types in a preprocessing stage.  -/
+  destruct: Bool := true
   /-- Add premises from the current premise selector. -/
   premises: Bool := false
 

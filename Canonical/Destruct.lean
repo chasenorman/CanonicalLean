@@ -1,6 +1,9 @@
 import Lean
+import Canonical.Util
 
 open Lean Meta Expr Elab Tactic Core
+
+namespace Destruct
 
 def STRUCTURES : NameSet := .ofList [``Prod, ``PProd, ``And, ``Sigma, ``PSigma]
 
@@ -24,7 +27,7 @@ def addPrefix (e : Expr) (pre : Name) (n : Nat) : Expr :=
   | 0 => e
   | n + 1 => match e with
     | .lam name type body info =>
-      .lam (pre.toString ++ "_" ++ name.toString).toName type (addPrefix body pre n) info
+      .lam (pre.getRoot.toString ++ "_" ++ name.toString).toName type (addPrefix body pre n) info
     | _ => panic! s!"addPrefix: expected a lambda, got {e}"
 
 /-- If `e` is a structure, produces expressions for the projections.
@@ -45,26 +48,16 @@ def separateHead (e : Expr) (typ : Expr) : MetaM (Option (Expr × Array Expr)) :
     return some (← etaExpand (mkAppN (.const ``Exists.intro fn.constLevels!) args), fields)
   else return none
 
-def identity (name : Name) (e : Expr) : Expr := .lam name e (.bvar 0) .default
-
-def apply (e : Expr) (args : List Expr) : Expr :=
-  match args with
-  | [] => e
-  | arg :: args => match e with
-    | .lam name type body info =>
-      apply (body.instantiate1 arg) args
-    | _ => panic! "apply: expected a lambda, got {e}"
-
 def constructApp (separations : List (Expr × Array Expr)) (reconstruct : Expr) (fvars : Array Expr) (fields : Array Expr := #[]) : MetaM Expr := do
   match separations with
-  | [] => return apply reconstruct fields.toList
+  | [] => return Canonical.apply reconstruct fields.toList
   | (construct, destruct) :: rest => do
     lambdaBoundedTelescope (construct.replaceFVars (fvars.take fields.size) fields) destruct.size fun xs construct => do
       return ← mkLambdaFVars xs (← constructApp rest reconstruct fvars (fields.push construct))
 
 def destructApp (e : Expr) (field : Expr) (fvar : Expr) : MetaM Expr := do
   match e with
-  | .lam name type body info =>
+  | .lam _name _type body _info =>
     return ← mkLambdaFVars #[fvar] (body.instantiate1 field)
   | _ => throwError "destructApp: expected a lambda, got {e}"
 
@@ -89,34 +82,34 @@ mutual
     match ← whnf e, ← whnf e' with
     | .forallE name type body info, forallE name' type' body' info' =>
       withLocalDecl name info type fun fvar => do
-        let separate := (← separatePi type' name').1
-        let (construct, destruct) := separate.getD (identity name' type', #[identity name' type'])
+        let separate := (← separatePi type' name' info').1
+        let (construct, destruct) := separate.getD (Canonical.identity name' type', #[Canonical.identity name' type'])
         lambdaBoundedTelescope construct destruct.size fun fvars construct => do
           forallTelescopeReducingSeparate (body.instantiate1 fvar) (body'.instantiate1 construct) k (xs.push fvar) (xs' ++ fvars) (separations.push (separate.isSome, construct, destruct))
     | _, _ => k xs e xs' separations e'
 
-  partial def separateApp (e : Expr) (name : Name) : MetaM (Option (Expr × Array Expr)) := do
-    withLocalDecl name .default e fun fvar => do
+  partial def separateApp (e : Expr) (name : Name) (binfo : BinderInfo) : MetaM (Option (Expr × Array Expr)) := do
+    withLocalDecl name binfo e fun fvar => do
       (← separateHead fvar e).mapM fun (construct, fields) => do
         let construct := addPrefix construct name fields.size
-        lambdaBoundedTelescope construct fields.size fun fvars construct_body => do
+        lambdaBoundedTelescope construct fields.size fun fvars _construct_body => do
           let lctx ← getLCtx
           let ids := fvars.map (fun x => x.fvarId!)
           let types := ids.map (fun x => (lctx.get! x).type)
           let names := ids.map (fun x => (lctx.get! x).userName)
-          let separations ← (names.zip types).mapM (fun (name, type) => do pure ((← separatePi type name).1.getD (identity name type, #[identity name type]))) -- eta...
+          let separations ← (names.zip types).mapM (fun (name, type) => do pure ((← separatePi type name binfo).1.getD (Canonical.identity name type, #[Canonical.identity name type]))) -- eta...
           let destructs := (separations.zip fields).flatMap (fun ((_, destruct), field) => destruct.map (fun d => (d, field)))
           return (← constructApp separations.toList construct fvars, ← destructs.mapM (fun (d, f) => destructApp (d.replaceFVars fvars fields) f fvar))
 
-  partial def separatePi (e : Expr) (name : Name) (n : Nat := 0) : MetaM (Option (Expr × Array Expr) × Nat) := do
-    forallTelescopeReducingSeparate e e fun xs e xs' separations e' => do -- it's xs'
-      let separateApp ← separateApp e name
-      let count := ((separations.take n).map (fun (a, b, c) => c.size)).sum
+  partial def separatePi (e : Expr) (name : Name) (binfo : BinderInfo) : MetaM (Option (Expr × Array Expr) × Array Nat) := do
+    forallTelescopeReducingSeparate e e fun xs e xs' separations _e' => do
+      let separateApp ← separateApp e name binfo
+      let count := (separations).map fun (_, _, c) => c.size
       if separations.all (!·.1) && separateApp.isNone then
         return (none, count)
       let separations := separations.map (·.2)
-      let (construct, destruct) := separateApp.getD (identity name e, #[identity name e])
-      return (some (← constructPi construct xs destruct.size xs' ((xs.zip separations).flatMap (fun (x, (_, l)) => l.map (fun i => apply i [x]))) separations, ← destruct.mapM fun d => destructPi d xs xs' separations), count)
+      let (construct, destruct) := separateApp.getD (Canonical.identity name e, #[Canonical.identity name e])
+      return (some (← constructPi construct xs destruct.size xs' ((xs.zip separations).flatMap (fun (x, (_, l)) => l.map (fun i => Canonical.apply i [x]))) separations, ← destruct.mapM fun d => destructPi d xs xs' separations), count)
 end
 
 def replaceM (f? : Expr → MetaM (Option Expr)) (e : Expr) : MetaM Expr := do
@@ -136,23 +129,48 @@ def modifyLCtx (l : LocalContext) (f : LocalDecl → MetaM LocalDecl) : MetaM Lo
     let decl ← f decl
     pure (acc.modifyLocalDecl decl.fvarId (fun _ => decl))) l
 
+def destructTactic (goal : MVarId) : MetaM (Bool × List (Array FVarId × MVarId)) := do
+  let toRevert ← goal.withContext do
+    let mut toRevert := #[]
+    for fvarId in (← getLCtx).getFVarIds do
+      unless (← fvarId.getDecl).isAuxDecl do
+        toRevert := toRevert.push fvarId
+    pure toRevert
+  let (_xs, reverted) ← goal.revert toRevert
+  reverted.withContext do
+    if let (some (construct, destruct), count) ← separatePi (← reverted.getType) `destruct .default then
+      let (mvars, _, construct) ← lambdaMetaTelescope construct destruct.size
+      reverted.assign construct
+      return (true, (← mvars.mapM fun mvar => do pure (← mvar.mvarId!.introNP (count.take toRevert.size).sum)).toList)
+    return (false, [← reverted.introNP toRevert.size])
+
+def destructCanonical (goal : MVarId) : MetaM (Option (MVarId × (Expr → MetaM Expr))) := do
+  let goal := (← mkFreshExprMVar (← goal.getType)).mvarId!
+  goal.withContext do
+    let typ ← goal.getType
+    -- let level ← getLevel typ
+    let dneg := ((← getEnv).find? ``Canonical.dneg).get!.value!
+    let next := (← goal.apply (Canonical.apply dneg [typ]))[0]!
+    let destruct ← destructTactic next
+    if !destruct.1 then
+      return none
+    let result := (destruct.2)[0]!
+    let ⟨_, _, assignment⟩ := ← abstractMVars
+      (← instantiateMVars (← getExprMVarAssignment? goal).get!)
+    let assignment ← betaReduce assignment
+    return (result.2, fun x => do
+      betaReduce (Canonical.apply assignment [← mkLambdaFVars (result.1.map .fvar) x]))
+
 syntax (name := destruct) "destruct" : tactic
 
 @[tactic destruct] def evalDestruct : Tactic
 | `(tactic| destruct) => do
-  liftMetaTactic fun goal => do
-    let toRevert ← goal.withContext do
-      let mut toRevert := #[]
-      for fvarId in (← getLCtx).getFVarIds do
-        unless (← fvarId.getDecl).isAuxDecl do
-          toRevert := toRevert.push fvarId
-      pure toRevert
-    let (xs, reverted) ← goal.revert toRevert
-    reverted.withContext do
-      if let (some (construct, destruct), count) ← separatePi (← reverted.getType) `destruct toRevert.size then
-        let (mvars, _, construct) ← lambdaMetaTelescope construct destruct.size
-        reverted.assign construct
-        return (← mvars.mapM fun mvar => do pure (← mvar.mvarId!.introNP count).2).toList
+  liftMetaTactic fun x => do
+    let destruct ← destructTactic x
+    if !destruct.1 then
       logWarning "destruct made no progress."
-      return [(← reverted.introNP toRevert.size).2]
+    pure (destruct.2.map (·.2))
+  -- liftMetaTactic (fun x => do pure [(← destructCanonical x).1])
 | _ => throwUnsupportedSyntax
+
+end Destruct
