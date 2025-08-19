@@ -27,6 +27,8 @@ mutual
 
   /-- Obtain the `Option Typ` binder type for an `FVarId`. -/
   partial def toBind (id : FVarId) (inhabited : Bool := true) : ToCanonicalM (Option Typ) := do
+    if (← id.getType).getAppFnArgs.1 == ``STAR then
+      return none
     if (← id.getBinderInfo).isInstImplicit && (← read).config.monomorphize then
       match (← read).polarity with
       | .premise =>
@@ -108,7 +110,7 @@ mutual
       let defineType := !(← read).noTypes && (← get).numTypes < MAX_TYPES
 
       let defn := ((← get).definitions.find? name).get!
-      if defn.type matches .undef && defineType then
+      if defn.type matches .undef && defineType && type.getAppFnArgs.1 != ``STAR then
         let _ ← setType name .none
         modify (fun state => { state with numTypes := state.numTypes + 1 })
         let type ← toTyp type
@@ -164,29 +166,29 @@ mutual
   partial def onTypeConst (name : Name) : ToCanonicalM Unit := do
     if let .inductInfo info ← getConstInfo name then
       let env ← getEnv
-      -- if let none := getStructureInfo? env name then
-      for ctor in info.ctors do
-        let _ ← defineConst ctor
+      if !(← read).config.destruct || (getStructureInfo? env name).isNone then
+        for ctor in info.ctors do
+          let _ ← defineConst ctor
 
-      withReader (fun ctx => { ctx with noTypes := true}) do
-        let _ ← defineConst ``False
-        let _ ← defineConst ``Eq
+        withReader (fun ctx => { ctx with noTypes := true}) do
+          let _ ← defineConst ``False
+          let _ ← defineConst ``Eq
 
-      let rules ← reduceCtorEqRules name info
-      let success ← addConstraints rules
-      assert! success
-      modify (fun x =>
-        let eq := (x.definitions.find? (`Eq).toString).get!
-        let new := x.definitions.insert (`Eq).toString
-          { eq with rules := eq.rules ++ rules }
-        { x with definitions := new }
-      )
+        let rules ← reduceCtorEqRules name info
+        let success ← addConstraints rules
+        assert! success
+        modify (fun x =>
+          let eq := (x.definitions.find? (`Eq).toString).get!
+          let new := x.definitions.insert (`Eq).toString
+            { eq with rules := eq.rules ++ rules }
+          { x with definitions := new }
+        )
 
-      if let some info := getStructureInfo? env name then
-        for field in info.fieldInfo do
-          let _ ← defineConst field.projFn
-      else
-        let _ ← defineConst (mkRecName name)
+        if let some info := getStructureInfo? env name then
+          for field in info.fieldInfo do
+            let _ ← defineConst field.projFn
+        else
+          let _ ← defineConst (mkRecName name)
 
   /-- `define` call specialized with `onDefineConst` and `onTypeConst` -/
   partial def defineConst (name : Name) : ToCanonicalM Arity := do
