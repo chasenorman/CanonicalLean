@@ -30,8 +30,8 @@ def interrupted : CoreM Bool := do
   else return false
 
 /-- Metaprogramming interface for CanonicalLean. This function adds the LCtx as premises. -/
-def canonicalLean (goal : Expr) (premises : Array Name) (timeout : UInt64) (config : CanonicalConfig) : MetaM (Array Expr) := do
-  let typ ← toCanonical goal premises config
+def canonicalLean (goal : Expr) (premises : Array Name) (structures : Array Name := #[]) (timeout : UInt64) (config : CanonicalConfig) : MetaM (Array Expr) := do
+  let typ ← toCanonical goal premises (structures.push ``Pi) config
   let result ← canonical typ timeout config.count
   result.terms.mapM fun term => fromCanonical term goal
 
@@ -48,8 +48,6 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
   let timeout := if let some timeout := timeout_syntax then timeout.getNat else 5
 
   let config ← canonicalConfig config
-  if config.pi then
-    premises := premises.push ``Pi
 
   if config.premises then
     let found ← select (← getMainGoal)
@@ -58,12 +56,21 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
     let found := found.take 3
     premises := premises ++ found
 
-  let (goal, reconstruct) ← preprocess (← getMainGoal) config
+  let mut structs := #[]
+  if config.destruct then
+    let env ← getEnv
+    structs := premises.filter fun name => isStructure env name
+    premises := premises.filter fun name => !isStructure env name
+
+  if config.pi then
+    premises := premises.push ``Pi
+
+  let (goal, reconstruct) ← preprocess (← getMainGoal) config structs
 
   withArityUnfold config.monomorphize do goal.withContext do
     let goal ← goal.getType
 
-    let typ ← toCanonical goal premises config
+    let typ ← toCanonical goal premises (structs.push ``Pi) config
 
     if config.debug then
       Elab.admitGoal (← getMainGoal)

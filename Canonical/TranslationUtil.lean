@@ -58,6 +58,7 @@ structure Context where
   noTypes: Bool := false
   config: CanonicalConfig
   polarity: Polarity := .goal
+  structures: Array Name
 
 /-- The `definitions` to be sent to Canonical,
     and the number of them which have types. -/
