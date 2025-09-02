@@ -81,13 +81,13 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
     -- Refinement UI
     if config.refine then
       let _ ← refine typ
-      Elab.admitGoal (← getMainGoal)
       let fileMap ← getFileMap
       let strRange := (← getRef).getRange?.getD (panic! "No range found!")
       let range := fileMap.utf8RangeToLspRange strRange
       let width := Lean.Meta.Tactic.TryThis.getInputWidth (← getOptions)
       let (indent, column) := Lean.Meta.Tactic.TryThis.getIndentAndColumn fileMap strRange
-      let x ← Server.WithRpcRef.mk (RpcData.mk goal config (← getLCtx) (← getMCtx) width indent column)
+      let x ← Server.WithRpcRef.mk (RpcData.mk goal config (← getLCtx) (← getMCtx) (← getMainGoal) reconstruct width indent column)
+      Elab.admitGoal (← getMainGoal)
       Lean.Widget.savePanelWidgetInfo (hash refineWidget.javascript) (← getRef)
         (props := do
           let rpcData ← Server.RpcEncodable.rpcEncode x
