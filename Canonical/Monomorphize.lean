@@ -4,6 +4,12 @@ open Meta
 
 namespace Monomorphize
 
+@[inline]
+def Std.TreeSet.subset (t₁ t₂ : TreeSet α cmp) : Bool :=
+  t₁.all (t₂.contains ·)
+
+abbrev NameSet.subset : NameSet -> NameSet -> Bool := Std.TreeSet.subset
+
 /-- An expression with `levels` as `param` universes. -/
 structure UnivAbstracted where
   expr: Expr
@@ -53,8 +59,8 @@ def addConstant (name : Name) : MonoM Unit := do
 /-- Add `names` to `constNames`. -/
 def addConstants (names : NameSet) : MonoM Unit := do
   modify fun s => { s with
-    constNames := s.constNames.union names,
-    hasNewConst := s.hasNewConst || !names.subset s.constNames
+    constNames := Union.union s.constNames names,
+    hasNewConst := s.hasNewConst || !(NameSet.subset names s.constNames)
   }
 
 def getConstants : MonoM NameSet := do

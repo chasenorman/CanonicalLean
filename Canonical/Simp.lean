@@ -26,6 +26,12 @@ partial def getOrigins (constSet : NameSet) (trie : Trie SimpTheorem) : Array Or
       | _ => true
     (vs.filterMap (fun x => if x.priority ≥ eval_prio default then some x.origin else none)) ++ filtered.flatMap (fun x => getOrigins constSet x.2)
 
+@[inline]
+def Std.TreeSet.diff (t₁ t₂ : TreeSet α cmp) : TreeSet α cmp :=
+  t₂.foldl .erase t₁
+
+abbrev NameSet.diff (t₁ t₂ : NameSet) : NameSet := Std.TreeSet.diff t₁ t₂
+
 /-- Obtain the `@[simp]` theorems that only use constants in `constSet` on the `lhs`. -/
 def getRelevantSimpTheorems (constSet : NameSet) : MetaM (Array Name) := do
   let thms ← getSimpTheorems
@@ -38,7 +44,7 @@ def getRelevantSimpTheorems (constSet : NameSet) : MetaM (Array Name) := do
     forallTelescopeReducing (← getConstInfo x).type fun xs body => do
       if !xs.all (fun x => body.containsFVar x.fvarId!) then pure false else
       if let some (_, lhs, _) := (eq? body) then do
-        (lhs.getUsedConstantsAsSet.diff constSet).foldM (fun acc name => do
+        (NameSet.diff lhs.getUsedConstantsAsSet constSet).foldlM (fun acc name => do
           pure (acc && (← getUnfoldableConst? name).isSome)
         ) true
       else pure false

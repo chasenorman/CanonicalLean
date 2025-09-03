@@ -1,5 +1,6 @@
 import Canonical.Basic
 import Canonical.ToCanonical
+import Std.Data.HashMap
 import Lean
 
 namespace Canonical
@@ -8,7 +9,7 @@ open Lean hiding Term
 open Std Meta Syntax
 
 /-- When translating from Canonical, we associate names in the `Term` with corresponding Lean `FVarId`s -/
-abbrev FromCanonicalM := StateT (HashMap String FVarId) MetaM
+abbrev FromCanonicalM := StateT (Std.HashMap String FVarId) MetaM
 
 /-- Converts instances of `Pi.mk` and `Pi.f` at the head into λ-expressions and applications, respectively. -/
 partial def removePi (t : Term) : Term :=
