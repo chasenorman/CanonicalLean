@@ -12,6 +12,8 @@ structure RpcData where
   config : CanonicalConfig
   lctx: LocalContext
   mctx: MetavarContext
+  mainGoal: MVarId
+  reconstruct: Expr → MetaM Expr
   width: Nat
   indent: Nat
   column: Nat
@@ -36,11 +38,13 @@ def getRefinementStr (params : InsertParams) : RequestM (RequestTask String) :=
     withMCtx data.mctx do withLCtx' data.lctx do
       withArityUnfold data.config.monomorphize do withOptions applyOptions do
         let expr ← fromCanonical (← getRefinement) data.goal
-        let tm ← Lean.Meta.Tactic.TryThis.delabToRefinableSyntax expr
-        let stx ← `(tactic| refine $tm)
-        let fmt ← Lean.PrettyPrinter.ppCategory `tactic stx
-        let str := Std.Format.pretty fmt data.width data.indent data.column
-        pure str
+        let expr ← data.reconstruct expr
+        data.mainGoal.withContext do
+          let tm ← Lean.Meta.Tactic.TryThis.delabToRefinableSyntax expr
+          let stx ← `(tactic| refine $tm)
+          let fmt ← Lean.PrettyPrinter.ppCategory `tactic stx
+          let str := Std.Format.pretty fmt data.width data.indent data.column
+          pure str
 
 /-- The widget for the refinement UI. -/
 @[widget_module]

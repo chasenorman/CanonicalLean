@@ -166,7 +166,7 @@ mutual
   partial def onTypeConst (name : Name) : ToCanonicalM Unit := do
     if let .inductInfo info ← getConstInfo name then
       let env ← getEnv
-      if !(← read).config.destruct || (getStructureInfo? env name).isNone then
+      if !(← read).config.destruct || !isStructure env name || (← read).structures.contains name then
         for ctor in info.ctors do
           let _ ← defineConst ctor
 
@@ -174,9 +174,12 @@ mutual
           let _ ← defineConst ``False
           let _ ← defineConst ``Eq
 
-        let rules ← reduceCtorEqRules name info
-        let success ← addConstraints rules
-        assert! success
+        let mut rules := #[]
+        if (← read).config.simp then
+          rules ← reduceCtorEqRules name info
+          let success ← addConstraints rules
+          assert! success
+
         modify (fun x =>
           let eq := (x.definitions.find? (`Eq).toString).get!
           let new := x.definitions.insert (`Eq).toString
@@ -292,12 +295,12 @@ def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
   }
 
 /-- Convert `goal` to a `Typ` with `premises` and all included definitions. -/
-def toCanonical (goal : Expr) (premises : Array Name) (config : CanonicalConfig) : MetaM Typ := do
+def toCanonical (goal : Expr) (premises : Array Name) (structures : Array Name) (config : CanonicalConfig) : MetaM Typ := do
   let lctx ← getLCtx
   (((toCanonical_ goal premises).run
     {
       arities := ← lctx.foldlM (fun arities decl => do
         pure (arities.insert decl.fvarId (← typeArity decl.type)))
-          (.emptyWithCapacity lctx.size), config
+          (.emptyWithCapacity lctx.size), config, structures
     }).run' { }).run'
       { globalFVars := .ofArray lctx.getFVarIds, constNames := .ofList [``OfNat.ofNat] }

@@ -7,11 +7,11 @@ namespace Canonical
 
 /-- Replacements for certain `@[simp]` theorems with alternative encodings. -/
 def SIMP_HARD_CODE : HashMap Name (Array Name) := .ofList [
-  (`Nat.succ_eq_add_one, #[`Nat.succ.injEq]),
-  (`Nat.add_zero, #[`Nat.add_zero, `Nat.add_succ, `Nat.succ_add, `Nat.add_assoc]),
-  (`Nat.mul_one, #[]),
-  (`Nat.one_mul, #[`Nat.succ_mul, `Nat.mul_assoc]),
-  (`Nat.one_pow, #[`Nat.pow_succ, `Nat.pow_add, `Nat.mul_pow]),
+  (`Nat.succ_eq_add_one, #[``Nat.succ.injEq]),
+  (`Nat.add_zero, #[``Nat.add_zero, ``Nat.add_succ, ``Nat.succ_add, ``Nat.add_assoc]),
+  (`Nat.mul_one, #[``Nat.mul_succ]),
+  (`Nat.one_mul, #[``Nat.succ_mul, ``Nat.mul_assoc]),
+  (`Nat.one_pow, #[``Nat.pow_succ, ``Nat.pow_add, ``Nat.mul_pow]),
   (`Nat.pow_one, #[])
 ]
 
@@ -43,9 +43,11 @@ def getRelevantSimpTheorems (constSet : NameSet) : MetaM (Array Name) := do
   let relevant ← names.filterM fun x => do
     forallTelescopeReducing (← getConstInfo x).type fun xs body => do
       if !xs.all (fun x => body.containsFVar x.fvarId!) then pure false else
-      if let some (_, lhs, _) := (eq? body) then do
-        (NameSet.diff lhs.getUsedConstantsAsSet constSet).foldlM (fun acc name => do
-          pure (acc && (← getUnfoldableConst? name).isSome)
-        ) true
+      if let some (typ, lhs, _) := (eq? body) then do
+        if !typ.isSort then
+          (lhs.getUsedConstantsAsSet.diff constSet).foldM (fun acc name => do
+            pure (acc && (← getUnfoldableConst? name).isSome)
+          ) true
+        else pure false
       else pure false
   pure (relevant.flatMap fun x => SIMP_HARD_CODE.getD x #[x])
