@@ -53,8 +53,8 @@ def addConstant (name : Name) : MonoM Unit := do
 /-- Add `names` to `constNames`. -/
 def addConstants (names : NameSet) : MonoM Unit := do
   modify fun s => { s with
-    constNames := s.constNames.union names,
-    hasNewConst := s.hasNewConst || !names.subset s.constNames
+    constNames := s.constNames.insertMany names,
+    hasNewConst := s.hasNewConst || !names.all s.constNames.contains
   }
 
 def getConstants : MonoM NameSet := do

@@ -6,6 +6,9 @@ on:
       tag:
         description: 'Release tag'
         required: true
+      rust:
+        description: 'Rust tag'
+        required: true
 
 jobs:
   upload:
@@ -27,7 +30,7 @@ jobs:
         run: |
           mkdir -p .lake/build/lib
           curl -L -o .lake/build/lib/${{ matrix.filename }} \
-            https://github.com/chasenorman/Canonical/releases/download/${{ github.event.inputs.tag }}/${{ matrix.filename }}
+            https://github.com/chasenorman/Canonical/releases/download/${{ github.event.inputs.rust }}/${{ matrix.filename }}
 
       - uses: leanprover/lean-action@v1
         with:

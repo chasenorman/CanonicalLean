@@ -39,7 +39,7 @@ def getRelevantSimpTheorems (constSet : NameSet) : MetaM (Array Name) := do
       if !xs.all (fun x => body.containsFVar x.fvarId!) then pure false else
       if let some (typ, lhs, _) := (eq? body) then do
         if !typ.isSort then
-          (lhs.getUsedConstantsAsSet.diff constSet).foldM (fun acc name => do
+          (lhs.getUsedConstantsAsSet.filter (!constSet.contains ·)).foldlM (fun acc name => do
             pure (acc && (← getUnfoldableConst? name).isSome)
           ) true
         else pure false
