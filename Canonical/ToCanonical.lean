@@ -175,8 +175,14 @@ mutual
           let _ ← defineConst ``Eq
 
         let mut rules := #[]
-        if (← read).config.simp then
+        if (← read).config.simp && name != ``Pi then
           rules ← reduceCtorEqRules name info
+          -- injectivity rules
+          for ctor in info.ctors do
+            if let some inj := (← getEnv).find? (ctor.str "injEq") then
+              if let some rule := ← toRule #[inj.name.toString] inj.type then
+                rules := rules.push rule
+
           let success ← addConstraints rules
           assert! success
 

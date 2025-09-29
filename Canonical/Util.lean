@@ -68,7 +68,7 @@ def canUnfold (monomorphize : Bool) (cfg : Config) (info : ConstantInfo) : CoreM
       return true
     -- If `monomorphize`, we only reduce `OfNat` instances.
     else if m == .instances && isGlobalInstance env info.name &&
-      (!monomorphize || (← (isClass? (info.type)).run' {}) == some `OfNat) then
+      (!monomorphize || (← (isClass? (info.type)).run' {}) == some `OfNat || info.name.getPrefix == `Set) then
       return true
     else if let some value := info.value? then
       return ← (hidesForall value).run' {}
@@ -101,8 +101,7 @@ def printForce (s : String) : IO Unit := do
 def applyOptions : Options → Options :=
   (pp.proofs.set · true |>
   (pp.motives.all.set · true |>
-  (pp.coercions.set · false |>
-  (pp.unicode.fun.set · true))))
+  (pp.unicode.fun.set · true)))
 
 def dneg (Goal : Sort u) (destruct : (Destruct : STAR (Sort u)) → (Goal → Destruct) → Destruct) : Goal :=
   destruct Goal fun a ↦ a
