@@ -6,7 +6,7 @@ import Canonical.Preprocess
 
 namespace Canonical
 
-open Lean Parser Tactic Meta Elab Tactic Core PremiseSelection
+open Lean Parser Tactic Meta Elab Tactic Core LibrarySearch PremiseSelection
 
 /-- The return type of Canonical, with the generated `terms`. -/
 structure CanonicalResult where
