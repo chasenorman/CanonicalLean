@@ -49,6 +49,11 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
 
   let config ← canonicalConfig config
 
+  if config.librarySearch then
+    let (_, goal) ← (← getMainGoal).intros
+    goal.withContext do
+    premises := premises ++ (← librarySearchSymm libSearchFindDecls (← getMainGoal)).map (·.2.1)
+
   if config.premises then
     let found ← select (← getMainGoal)
     let found := found.insertionSort (fun a b => a.score > b.score)

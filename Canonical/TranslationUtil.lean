@@ -25,6 +25,8 @@ structure CanonicalConfig where
   monomorphize: Bool := true
   /-- Unpacks structure types in a preprocessing stage.  -/
   destruct: Bool := true
+  /-- Add librarySearch lemmas used by `exact?` and `apply?` -/
+  librarySearch: Bool := true
   /-- Add premises from the current premise selector. -/
   premises: Bool := false
 
