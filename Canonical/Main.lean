@@ -6,7 +6,7 @@ import Canonical.Preprocess
 
 namespace Canonical
 
-open Lean Parser Tactic Meta Elab Tactic Core PremiseSelection
+open Lean Parser Tactic Meta Elab Tactic Core LibrarySearch PremiseSelection
 
 /-- The return type of Canonical, with the generated `terms`. -/
 structure CanonicalResult where
@@ -48,6 +48,11 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
   let timeout := if let some timeout := timeout_syntax then timeout.getNat else 5
 
   let config ← canonicalConfig config
+
+  if config.librarySearch then
+    let (_, goal) ← (← getMainGoal).intros
+    goal.withContext do
+    premises := premises ++ (← librarySearchSymm libSearchFindDecls (← getMainGoal)).map (·.2.1)
 
   if config.premises then
     let found ← select (← getMainGoal)
