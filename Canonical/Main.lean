@@ -32,7 +32,7 @@ def interrupted : CoreM Bool := do
 
 def preprocessCanonical (goal : MVarId) (premises : Array Name) (config : CanonicalConfig) : MetaM (Typ × MVarId × (Expr → MetaM Expr)) := do
   let mut premises := premises
-  if config.premises then
+  if config.suggestions then
     let found ← select goal
     let found := found.insertionSort (fun a b => a.score > b.score)
     let found := found.map (fun x => x.name)

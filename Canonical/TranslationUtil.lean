@@ -26,7 +26,7 @@ structure CanonicalConfig where
   /-- Unpacks structure types in a preprocessing stage.  -/
   destruct: Bool := true
   /-- Add premises from the current premise selector. -/
-  premises: Bool := false
+  suggestions: Bool := false
 
 declare_config_elab canonicalConfig CanonicalConfig
 
