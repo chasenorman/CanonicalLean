@@ -14,6 +14,7 @@ def buildArchive :=
 package Canonical where
   preferReleaseBuild := true
   buildArchive := buildArchive ++ ".tar.gz"
+  extraDepTargets := #[`canonical]
 
 target canonical pkg : Dynlib := do pure $ Job.pure {
   path := pkg.sharedLibDir / nameToSharedLib "canonical_lean"
