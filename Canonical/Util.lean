@@ -101,7 +101,8 @@ def printForce (s : String) : IO Unit := do
 def applyOptions : Options → Options :=
   (pp.proofs.set · true |>
   (pp.motives.all.set · true |>
-  (pp.unicode.fun.set · true)))
+  (pp.unicode.fun.set · true |>
+  (pp.letVarTypes.set · true))))
 
 def dneg (Goal : Sort u) (destruct : (Destruct : STAR (Sort u)) → (Goal → Destruct) → Destruct) : Goal :=
   destruct Goal fun a ↦ a
