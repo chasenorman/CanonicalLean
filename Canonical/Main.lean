@@ -21,6 +21,9 @@ deriving Inhabited
 /-- Generate terms of a given type, with given timeout and desired count. -/
 @[never_extract, extern "canonical"] opaque canonical : @& Typ → UInt64 → USize → IO CanonicalResult
 
+/-- Terminate all invocations of `canonical` that are currently running. -/
+@[never_extract, extern "cancel"] opaque cancel : IO Unit
+
 /-- Start a server with the refinement UI on the given type. -/
 @[never_extract, extern "refine"] opaque refine : @& Typ → IO Unit
 
@@ -30,8 +33,16 @@ def interrupted : CoreM Bool := do
   if let some tk := (← read).cancelTk? then return ← tk.isSet
   else return false
 
-def preprocessCanonical (goal : MVarId) (premises : Array Name) (config : CanonicalConfig) : MetaM (Typ × MVarId × (Expr → MetaM Expr)) := do
-  let mut premises := premises
+syntax premises := " [" withoutPosition(term,*,?) "]"
+
+/-- Get the premises for inclusion, and structures to be unfolded, from the user-supplied list and the premise selector. -/
+def getPremises (goal : MVarId) (premises_syntax : Option (TSyntax `Canonical.premises)) (config : CanonicalConfig) : MetaM (Array Name × Array Name) := do
+  let mut premises ← if let some premises := premises_syntax then
+    match premises with
+    | `(premises| [$args,*]) => args.getElems.raw.mapM resolveGlobalConstNoOverload
+    | _ => Elab.throwUnsupportedSyntax
+    else pure #[]
+
   if config.suggestions then
     let found ← select goal
     let found := found.insertionSort (fun a b => a.score > b.score)
@@ -48,51 +59,56 @@ def preprocessCanonical (goal : MVarId) (premises : Array Name) (config : Canoni
   if config.pi then
     premises := premises.push ``Pi
 
-  let (goal', reconstruct) ← preprocess goal config structs
+  return (premises, structs)
 
-  let typ ← withArityUnfold config.monomorphize do goal'.withContext do
-    let goal ← goal'.getType
-    toCanonical goal premises (structs.push ``Pi) config
-
-  return (typ, goal', reconstruct)
-
-
-def runCanonical (typ : Typ) (goal : MVarId) (reconstruct : Expr → MetaM Expr) (timeout : UInt64) (config : CanonicalConfig) : MetaM (Array Expr) := do
-  -- Run Canonical asynchronously, so that we can check for cancellation.
+/-- Run Canonical asynchronously, so that we can check for cancellation. -/
+def runCanonical (typ : Typ) (timeout : UInt64) (config : CanonicalConfig) : MetaM CanonicalResult := do
   checkInterrupted
-  let task ← IO.asTask (prio := .dedicated)
-    (canonical typ timeout config.count)
+  let task ← IO.asTask (prio := .dedicated) (canonical typ timeout config.count)
   while !(← IO.hasFinished task) do
     if ← interrupted then
-      IO.cancel task
+      cancel
       checkInterrupted
     IO.sleep 10
+  IO.ofExcept task.get
 
+/-- Perform `fromCanonical` and `reconstruct` on the terms in `result`. -/
+def postprocess (result : CanonicalResult) (goal : MVarId) (config : CanonicalConfig) (reconstruct : Expr → MetaM Expr) : MetaM (Array Expr) := do
   withArityUnfold config.monomorphize do goal.withContext do
-    let result ← IO.ofExcept task.get
     let proofs ← result.terms.mapM fun term => do fromCanonical term (← goal.getType)
-    let proofs ← proofs.mapM (fun x => reconstruct x)
+    let proofs ← proofs.mapM reconstruct
     return proofs
 
+/-- If no proof was found, show a relevant error. Otherwise, suggest the proofs. -/
+def present (proofs : Array Expr) (goal : MVarId)
+  (premises_syntax : Option (TSyntax `Canonical.premises)) (timeout_syntax : Option (TSyntax `num)) : TacticM Unit := do
+  if proofs.isEmpty then
+    match premises_syntax with
+    | some _ => match timeout_syntax with
+      | some _ => throwError "No proof found."
+      | none => throwError "No proof found. Change timeout to `n` with `canonical n`"
+    | none => throwError "No proof found. Supply constant symbols with `canonical [name, ...]`"
 
-syntax premises := " [" withoutPosition(term,*,?) "]"
+  goal.withContext do withOptions applyOptions do
+    Elab.admitGoal goal
+    if h : proofs.size = 1 then
+      TryThis.addExactSuggestion (← getRef) proofs[0]
+    else
+      TryThis.addExactSuggestions (← getRef) proofs
 
 /-- Canonical exhaustively searches for terms in dependent type theory. -/
 elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig premises_syntax:(premises)? : tactic => do
-  let mut premises ← if let some premises := premises_syntax then
-    match premises with
-    | `(premises| [$args,*]) => args.getElems.raw.mapM resolveGlobalConstNoOverload
-    | _ => Elab.throwUnsupportedSyntax
-    else pure #[]
-
-  let timeout := if let some timeout := timeout_syntax then UInt64.ofNat timeout.getNat else 5
-
   let config ← canonicalConfig config
+  let goal ← getMainGoal
+  let (premises, structs) ← getPremises goal premises_syntax config
 
-  let (typ, goal', reconstruct) ← preprocessCanonical (← getMainGoal) premises config
+  let (goal', reconstruct) ← preprocess goal config structs
+
+  let typ ← withArityUnfold config.monomorphize do goal'.withContext do
+    toCanonical (← goal'.getType) premises (structs.push ``Pi) config
 
   if config.debug then
-    Elab.admitGoal (← getMainGoal)
+    Elab.admitGoal goal
     let _ ← save_to_file typ "debug.json"
     dbg_trace typ
     return
@@ -103,29 +119,22 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
     let fileMap ← getFileMap
     let strRange := (← getRef).getRange?.getD (panic! "No range found!")
     let range := fileMap.utf8RangeToLspRange strRange
-    let width := Lean.Meta.Tactic.TryThis.getInputWidth (← getOptions)
-    let (indent, column) := Lean.Meta.Tactic.TryThis.getIndentAndColumn fileMap strRange
-    let x ← Server.WithRpcRef.mk (RpcData.mk (← goal'.getType) config ((← getMCtx).getDecl goal').lctx (← getMCtx) (← getMainGoal) reconstruct width indent column)
-    Elab.admitGoal (← getMainGoal)
-    Lean.Widget.savePanelWidgetInfo (hash refineWidget.javascript) (← getRef)
-      (props := do
-        let rpcData ← Server.RpcEncodable.rpcEncode x
-        pure (Json.mkObj [("rpcData", rpcData), ("range", ToJson.toJson range)]))
+    let width := TryThis.getInputWidth (← getOptions)
+    let (indent, column) := TryThis.getIndentAndColumn fileMap strRange
+    let x ← Server.WithRpcRef.mk ({
+      goal := ← goal'.getType,
+      lctx := ((← getMCtx).getDecl goal').lctx,
+      mctx := ← getMCtx,
+      mainGoal := goal,
+      config,reconstruct, width, indent, column
+    } : Canonical.RpcData)
+    Elab.admitGoal goal
+    Widget.savePanelWidgetInfo (hash refineWidget.javascript) (← getRef) (props := do
+      let rpcData ← Server.RpcEncodable.rpcEncode x
+      return Json.mkObj [("rpcData", rpcData), ("range", ToJson.toJson range)])
     return
 
-  let proofs ← runCanonical typ goal' reconstruct timeout config
-
-  if proofs.isEmpty then
-    match premises_syntax with
-    | some _ => match timeout_syntax with
-      | some _ => throwError "No proof found."
-      | none => throwError "No proof found. Change timeout to `n` with `canonical n`"
-    | none => throwError "No proof found. Supply constant symbols with `canonical [name, ...]`"
-
-  (← getMainGoal).withContext do
-    withOptions applyOptions do
-      Elab.admitGoal (← getMainGoal)
-      if h : proofs.size = 1 then
-        Meta.Tactic.TryThis.addExactSuggestion (← getRef) proofs[0]
-      else
-        Meta.Tactic.TryThis.addExactSuggestions (← getRef) proofs
+  let timeout := if let some timeout := timeout_syntax then UInt64.ofNat timeout.getNat else 5
+  let result ← runCanonical typ timeout config
+  let proofs ← postprocess result goal' config reconstruct
+  present proofs goal premises_syntax timeout_syntax

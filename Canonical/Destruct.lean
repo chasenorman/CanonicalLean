@@ -16,7 +16,7 @@ def PEmpty.intro (elim : (C : Sort u) → C) : PEmpty := elim PEmpty-/
 
 abbrev DestructM := ReaderT NameSet MetaM
 
-/-- Use `isDefEq` to apply `e` to const `name` at index `i`.  -/
+/-- Use `isDefEq` to apply `e` to const `name` at index `i`. -/
 def applyAtIndex (name : Name) (i : Nat) (e : Expr) : MetaM Expr := do
   let info ← getConstInfo name
   let levels ← info.levelParams.mapM (fun _ => mkFreshLevelMVar)

@@ -19,6 +19,8 @@ require "chasenorman" / "Canonical"
 
 You should then be prompted to run `lake update Canonical`.
 
+**On `v4.28.0` and above, it may be necessary to write `import Canonical` and then invoke `lake clean` and `lake build` from the terminal, to properly install Canonical for the first time.**
+
 ## Usage
 
 Basic examples:
