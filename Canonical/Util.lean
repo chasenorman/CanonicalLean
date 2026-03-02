@@ -67,7 +67,7 @@ def canUnfold (monomorphize : Bool) (cfg : Config) (info : ConstantInfo) : CoreM
       || (Compiler.getInlineAttribute? env info.name matches .some .inline) then
       return true
     -- If `monomorphize`, we only reduce `OfNat` instances.
-    else if m == .instances && isGlobalInstance env info.name &&
+    else if m == .instances && (← isInstance info.name) &&
       (!monomorphize || (← (isClass? (info.type)).run' {}) == some `OfNat || info.name.getPrefix == `Set) then
       return true
     else if let some value := info.value? then

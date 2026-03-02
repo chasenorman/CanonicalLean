@@ -124,7 +124,7 @@ partial def unfoldInstDefn (e : Expr) : MetaM Expr := do
   let (name, args) := getAppFnArgs e
   let env ← getEnv
   if let some info := env.find? name then
-    if !isGlobalInstance env name then
+    if !(← isInstance name) then
       if let some value := info.value? then
         return ← unfoldInstDefn (← whnfR (mkAppN value args))
   return e
