@@ -76,11 +76,6 @@ def setType (key : String) (typ : LOption Typ) : ToCanonicalM Unit := do
 
 def MAX_TYPES := 100
 
-/-- Some Lean Π-types cannot be converted into Canonical Π-types,
-    and are instead converted into this structure. -/
-structure Pi (A : Type u) (B : A → Type v) where
-  f : (a : A) → B a
-
 /-- Monad for maintaining visited in DFS. -/
 abbrev WithVisited := StateT (HashSet String) Id
 

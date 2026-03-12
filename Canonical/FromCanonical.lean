@@ -22,17 +22,6 @@ partial def removePi (t : Term) : Term :=
                spine := { fn.spine with args := fn.spine.args.push arg } }
   else t
 
-open PrettyPrinter Delaborator SubExpr in
-/-- We use `.mdata` to store information about tactics used by Canonical. -/
-@[delab mdata.canonical]
-def delabCanonical : Delab := do
-  match ← getExpr with
-  | .mdata map _ =>
-    let result ← (map.getSyntax `canonical).replaceM (fun x =>
-      if x.isMissing then withMDataExpr delab else pure none)
-    pure (TSyntax.mk result)
-  | _ => throwError "delabCanonical called on non-mdata"
-
 /-- Syntax for `simp` and `simpa` calls generated given the `premiseRules` and `goalRules` attribution. -/
 def toSyntax (premiseRules: Array String) (goalRules: Array String) : Syntax := Unhygienic.run do
   let premiseRules := premiseRules.toList.toSSet.toList.toArray

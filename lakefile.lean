@@ -17,23 +17,10 @@ package Canonical where
 
 target canonical pkg : Dynlib := do
   let libPath := pkg.sharedLibDir / nameToSharedLib "canonical_lean"
+  let lib := { path := libPath, name := "canonical_lean" }
   if !(← libPath.pathExists) then
-    logWarning "Canonical dynlib fallback used!"
-    let archiveName := buildArchive ++ ".tar.gz"
-    let url := s!"https://github.com/chasenorman/CanonicalLean/releases/download/v{Lean.versionString}/{archiveName}"
-    let archivePath := pkg.buildDir / archiveName
-    let curl ← IO.Process.output {
-      cmd := "curl", args := #["-fsSL", "-o", archivePath.toString, url]
-    }
-    if curl.exitCode != 0 then
-      error s!"Failed to download {url}:\n{curl.stderr}"
-    IO.FS.createDirAll pkg.buildDir
-    let tar ← IO.Process.output {
-      cmd := "tar", args := #["-xzf", archivePath.toString, "-C", pkg.buildDir.toString]
-    }
-    if tar.exitCode != 0 then
-      error s!"Failed to extract {archivePath}:\n{tar.stderr}"
-  return Job.pure { path := libPath, name := "canonical_lean" }
+    (← pkg.gitHubRelease.fetch).mapM (fun _ => do pure lib)
+  else return Job.pure lib
 
 @[default_target]
 lean_lib Canonical where

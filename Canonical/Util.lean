@@ -1,3 +1,4 @@
+import Canonical.Symbols
 import Lean
 
 open Lean Meta Expr Name
@@ -24,9 +25,6 @@ partial def typeArity (e : Expr) : MetaM Arity := do
 /-- The number of parameters in type `e`. -/
 partial def typeArity1 (e : Expr) : MetaM Nat := do
   forallTelescopeReducing e fun xs _ => return xs.size
-
-/-- Indicator for STAR type. -/
-@[reducible] def STAR (α : Sort u) : Sort u := α
 
 /-- Given a head symbol `Expr`, returns a `Name` for serializing and its type. -/
 def toHead : Expr → MetaM (Name × Expr)
@@ -103,11 +101,6 @@ def applyOptions : Options → Options :=
   (pp.motives.all.set · true |>
   (pp.unicode.fun.set · true |>
   (pp.letVarTypes.set · true))))
-
-def dneg (Goal : Sort u) (destruct : (Destruct : STAR (Sort u)) → (Goal → Destruct) → Destruct) : Goal :=
-  destruct Goal fun a ↦ a
-
-def identity (name : Name) (e : Expr) : Expr := .lam name e (.bvar 0) .default
 
 def apply (e : Expr) (args : List Expr) : Expr :=
   match args with
