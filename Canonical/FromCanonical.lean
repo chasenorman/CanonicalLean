@@ -58,8 +58,8 @@ def fromHead (s : String) : FromCanonicalM (Expr × Expr) := do
 mutual
   /-- Builds a λ-expression of type `type` following the parameters of `t`. -/
   partial def fromTerm (t : Term) (type : Expr) : FromCanonicalM Expr := do
-    forallTelescopeReducing type fun xs body => do
-      let t := removePi t
+    let t := removePi t
+    forallBoundedTelescope type t.params.size fun xs body => do
       assert! xs.size == t.params.size
       let ids := xs.map (fun x => x.fvarId!)
       let names := t.params.map (fun v => v.name)
@@ -90,13 +90,13 @@ mutual
 
   /-- Recursively translates the arguments of a head symbol with type `type`.  -/
   partial def fromApp (args : List Term) (type : Expr) : FromCanonicalM (List Expr) := do
-    match ← whnf type with
-    | .forallE _ binderType body _ =>
-      let arg ← fromTerm (args.head!) binderType
-      return arg :: (← fromApp args.tail! (body.instantiate1 arg))
-    | _ =>
-      assert! args.isEmpty
-      return []
+    match args with
+    | [] => return []
+    | head :: tail =>
+      let .forallE _ binderType body _ ← withTransparency .all do whnf type
+        | throwError "cannot expose forall in type of applied symbol"
+      let arg ← fromTerm (head) binderType
+      return arg :: (← fromApp tail (body.instantiate1 arg))
 end
 
 /-- Converts a Term `t` of type `type` to a Lean expression. -/

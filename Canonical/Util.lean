@@ -89,6 +89,12 @@ variable [MonadControlT MetaM n] [Monad n]
 @[inline] def withArityUnfold (monomorphize : Bool) (e : n α) : n α :=
   withReducibleAndInstances (withCanUnfoldPred (canUnfold monomorphize) e)
 
+def withNoUnfoldPred [MonadControlT MetaM m] [Monad m] : m α → m α :=
+  mapMetaM <| withReader (fun ctx => { ctx with canUnfold? := none })
+
+def withoutArityUnfold [MonadControlT MetaM m] [Monad m] (x : m α) : m α :=
+  withDefault do withNoUnfoldPred do x
+
 /-- `dbg_trace` is not visible in the event of a crash or infinite loop. -/
 def printForce (s : String) : IO Unit := do
   let handle ← IO.FS.Handle.mk "output.txt" IO.FS.Mode.append

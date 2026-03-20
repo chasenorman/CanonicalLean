@@ -129,7 +129,7 @@ def elimSpecial (e : Expr) : MetaM Expr := do
       return e
     | proj type idx struct => do
       let info := getStructureInfo (← getEnv) type
-      return mkAppN (← mkProjection struct info.fieldNames[idx]!) args
+      return mkAppN (← withTransparency .all do (mkProjection struct info.fieldNames[idx]!)) args
     | _ => return e
 
 /-- Defines the `<synthInstance>` symbol with type `<instImplicit>`. -/

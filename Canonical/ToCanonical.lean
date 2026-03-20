@@ -13,7 +13,7 @@ namespace Canonical
 
 mutual
   /-- Convert a type `Expr` `e` to a `Typ`. -/
-  partial def toTyp (e : Expr) : ToCanonicalM Typ := do
+  partial def toTyp (e : Expr) : ToCanonicalM Typ := withIncRecDepth do
     forallTelescopeReducing e (whnfType := true) fun xs body => do
       let params ← xs.mapM (toVar ·)
       let ids := xs.map (·.fvarId!)
@@ -22,11 +22,10 @@ mutual
         let universal := body.getAppFn.hasAnyFVar (fun x => xs.contains (.fvar x))
         let paramTypes ← withReader (fun ctx => { ctx with polarity := flip ctx.polarity }) do
           ids.mapM (fun x => toBind x !universal)
-
         return { paramTypes, params, spine := ← toSpine body }
 
   /-- Obtain the `Option Typ` binder type for an `FVarId`. -/
-  partial def toBind (id : FVarId) (inhabited : Bool := true) : ToCanonicalM (Option Typ) := do
+  partial def toBind (id : FVarId) (inhabited : Bool := true) : ToCanonicalM (Option Typ) := withIncRecDepth do
     if (← id.getType).getAppFnArgs.1 == ``STAR then
       return none
     if (← id.getBinderInfo).isInstImplicit && (← read).config.monomorphize then
@@ -39,7 +38,7 @@ mutual
 
   /-- Translate an `Expr` `e` of type `type` to a `Term`.
       `arities` are the expected parameter arities, `params` accumulate via recursive calls. -/
-  partial def toTerm (e : Expr) (type : Expr) (arities : List Arity) (params : Array Var := #[]) : ToCanonicalM Term := do
+  partial def toTerm (e : Expr) (type : Expr) (arities : List Arity) (synthInst : Bool := true) (params : Array Var := #[]) : ToCanonicalM Term := withIncRecDepth do
     match ← whnf type with
     | forallE name binderType body info =>
       withLocalDecl name info binderType fun fvar =>
@@ -48,56 +47,57 @@ mutual
           withReader (fun ctx => { ctx with arities := ctx.arities.insert fvar.fvarId! {} }) do
             let e := mkApp3 (const ``Pi.mk [← getLevel binderType, ← getLevel (body.instantiate1 fvar)])
               binderType (lam name binderType body info) e
-            toTerm e (← inferType e) [] params
+            toTerm e (← inferType e) [] synthInst params
         | arity :: arities =>
           withReader (fun ctx => { ctx with arities := ctx.arities.insert fvar.fvarId! arity }) do
-            toTerm (app e fvar) (body.instantiate1 fvar) arities (params.push (← toVar fvar))
+            toTerm (app e fvar) (body.instantiate1 fvar) arities synthInst (params.push (← toVar fvar))
     | _ =>
       assert! arities.isEmpty
-      return { params, spine := ← toSpine (← whnf e) }
+      return { params, spine := ← toSpine (← whnf e) synthInst }
 
   /-- Translate an `Expr` `e` without λ bindings to a `Spine`. -/
-  partial def toSpine (e : Expr) : ToCanonicalM Spine := do
+  partial def toSpine (e : Expr) (synthInst : Bool := true) : ToCanonicalM Spine := withIncRecDepth do
     let e ← elimSpecial e
-    let e ← if (← read).config.monomorphize then preprocessMono e else pure e
+    let e ← if (← read).config.monomorphize then withoutArityUnfold do preprocessMono e else pure e
     withApp e fun fn args => do
       let (head, type) ← toHead fn
       let arity ← match fn with
       | fvar id => do pure ((← read).arities[id]!)
       | const name _ => defineConst name
       | _ => define head.toString type
-      return ← addArgs { head := head.toString } type args.toList arity.params.toList
+      return ← addArgs { head := head.toString } type args.toList arity.params.toList synthInst
 
   /-- Apply `args` to `spine` of type `type` with parameter arities `arities`. -/
-  partial def addArgs (spine : Spine) (type : Expr) (args : List Expr) (arities : List Arity) : ToCanonicalM Spine := do
-    match ← whnf type with
-    | forallE name binderType body info =>
-      if (← read).config.monomorphize && info.isInstImplicit then
+  partial def addArgs (spine : Spine) (type : Expr) (args : List Expr) (arities : List Arity) (synthInst : Bool := true) : ToCanonicalM Spine := withIncRecDepth do
+    match args with
+    | [] => return spine
+    | head :: tail =>
+      let .forallE name binderType body info ← withTransparency .all do whnf type
+        | throwError "cannot expose forall in type of applied symbol"
+      if (← read).config.monomorphize && info.isInstImplicit && synthInst then
         let _ ← defineInstance
-        return ← addArgs { spine with args := spine.args.push { spine := { head := "<synthInstance>" } } } (body.instantiate1 args.head!) args.tail! arities.tail
+        return ← addArgs { spine with args := spine.args.push { spine := { head := "<synthInstance>" } } } (body.instantiate1 head) tail arities.tail synthInst
 
       let spine ← match arities with
       | [] => do
+        let _ ← defineConst ``Pi.f
         pure { head := (``Pi.f).toString, args := #[
-          ← toTerm binderType (.sort .zero) {}, -- argument type
+          ← toTerm binderType (.sort .zero) {} synthInst, -- argument type
           ← toTerm (.lam name binderType body info)
-                       (.forallE name binderType (.sort .zero) info) [{}], -- output type
+                       (.forallE name binderType (.sort .zero) info) [{}] synthInst, -- output type
           { spine }, -- function
-          ← toTerm args.head! binderType {} -- argument
+          ← toTerm head binderType {} synthInst -- argument
         ]}
       | arity :: _ => do
-        let arg ← toTerm args.head! binderType arity.params.toList
+        let arg ← toTerm head binderType arity.params.toList synthInst
         pure { spine with args := spine.args.push arg }
-      addArgs spine (body.instantiate1 args.head!) args.tail! arities.tail
-    | _ =>
-      assert! args.isEmpty
-      return spine
+      addArgs spine (body.instantiate1 head) tail arities.tail synthInst
 
   /-- Ensure that `name` is in `definitions`. If not, it is added and `onDefine` is called.
       If the current definition of the symbol has no type, evaluate whether to add it,
       and call `onType` after adding a type. -/
   partial def define (name : String) (type : Expr)
-    (onDefine : ToCanonicalM Unit := do pure ()) (onType : ToCanonicalM Unit := do pure ()) : ToCanonicalM Arity := do
+    (onDefine : ToCanonicalM Unit := do pure ()) (onType : ToCanonicalM Unit := do pure ()) : ToCanonicalM Arity := withIncRecDepth do
     withReader (fun ctx => { ctx with polarity := .premise }) do
       if !(← get).definitions.contains name then
         let defn := { type := .undef, arity := ← typeArity type }
@@ -119,7 +119,7 @@ mutual
       return defn.arity
 
   /-- Add the reduction rules for a constant symbol.  -/
-  partial def onDefineConst (name : Name) : ToCanonicalM Unit := do
+  partial def onDefineConst (name : Name) : ToCanonicalM Unit := withIncRecDepth do
     let _ ← addConstant name
     let rules ← constRules name
     let success ← addConstraints rules
@@ -131,7 +131,7 @@ mutual
     pure ()
 
   /-- Determine the rules for constant `name` -/
-  partial def constRules (name : Name) : ToCanonicalM (Array Rule) := do
+  partial def constRules (name : Name) : ToCanonicalM (Array Rule) := withIncRecDepth do
     let decl ← getConstInfo name
     if ← Lean.isIrreducible name then
       return #[]
@@ -149,6 +149,7 @@ mutual
     match decl with
     | .recInfo info =>
       return ← info.rules.toArray.mapM fun r => do
+        let _ ← defineConst r.ctor
         let type ← inferType r.rhs
         let term ← toTerm r.rhs type (← typeArity type).params.toList
         pure (recRule name info r.ctor (← getConstInfoCtor r.ctor) term)
@@ -163,7 +164,7 @@ mutual
 
   /-- Auxiliary definitions, like constructors, recursors, and projections
       are defined with the type of a constant `name`. -/
-  partial def onTypeConst (name : Name) : ToCanonicalM Unit := do
+  partial def onTypeConst (name : Name) : ToCanonicalM Unit := withIncRecDepth do
     if let .inductInfo info ← getConstInfo name then
       let env ← getEnv
       if !(← read).config.destruct || !isStructure env name || (← read).structures.contains name then
@@ -200,11 +201,11 @@ mutual
           let _ ← defineConst (mkRecName name)
 
   /-- `define` call specialized with `onDefineConst` and `onTypeConst` -/
-  partial def defineConst (name : Name) : ToCanonicalM Arity := do
+  partial def defineConst (name : Name) : ToCanonicalM Arity := withIncRecDepth do
     define name.toString (← getConstInfo name).type (onDefineConst name) (onTypeConst name)
 
   /-- Convert equality `e` to a `Rule`, with given `attribution`. -/
-  partial def toRule (attribution : Array String) (e : Expr) (returnInvalid : Bool := true) : ToCanonicalM (Option Rule) :=
+  partial def toRule (attribution : Array String) (e : Expr) (returnInvalid : Bool := true) : ToCanonicalM (Option Rule) := withIncRecDepth do
     forallTelescopeReducing e fun xs e =>
       (eqOrIff? e).bindM fun ⟨lhs, rhs⟩ => do
         forallTelescopeReducing (← inferType lhs) fun txs _ => do
@@ -213,7 +214,7 @@ mutual
             pure (id, ← typeArity (← id.getType)))
           withReader (fun ctx => { ctx with arities := ctx.arities.insertMany arities }) do
             -- convert an equality of functions into an extensional equality of their applications
-            let lhs ← toSpine (← whnf (mkAppN lhs txs))
+            let lhs ← toSpine (← whnf (mkAppN lhs txs)) (synthInst := false)
             if returnInvalid || (← validSimpLemma (xs ++ txs) lhs) then
               return some ⟨lhs, ← toSpine (← whnf (mkAppN rhs txs)), attribution, true⟩
             else return none
@@ -241,14 +242,16 @@ def definePremise (name : Name) (simpOnly : Bool := false) : ToCanonicalM Unit :
   let info ← getConstInfo name
   if (← read).config.monomorphize then
     if (← getAllBinderInfos info.type).contains .instImplicit then
-      for ⟨expr, idx⟩ in (← monomorphizeConst name).zipIdx do
-        let monoName := Name.mkSimple ((name.num idx).toStringWithSep "_" true)
-        let mvar := (← mkFreshExprMVar (← inferType expr) .syntheticOpaque monoName).mvarId!
-        mvar.assign expr
-        let (mvarName, mvarType) ← toHead (.mvar mvar)
-
-        if !(← registerSimpPremise name.toString mvarType) && !simpOnly then
-          let _ ← define mvarName.toString mvarType
+      for ⟨expr, idx⟩ in (← withoutArityUnfold do monomorphizeConst name).zipIdx do
+        let type ← inferType expr
+        -- check for success
+        if !(← getAllBinderInfos type).contains .instImplicit then
+          let monoName := Name.mkSimple ((name.num idx).toStringWithSep "_" true)
+          let mvar := (← mkFreshExprMVar type .syntheticOpaque monoName).mvarId!
+          mvar.assign expr
+          let (mvarName, mvarType) ← toHead (.mvar mvar)
+          if !(← registerSimpPremise name.toString mvarType) && !simpOnly then
+            let _ ← define mvarName.toString mvarType
       return
 
   if !(← registerSimpPremise name.toString info.type) && !simpOnly then

@@ -162,13 +162,17 @@ partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
             let _ ← addAsCandidate childPattern
             -- Assign metas[i] to the child pattern.
             let success ← isDefEq metas[i]! childPattern
-            assert! success
             if !success then
               logWarning s!"Monomorphization failure: {e}"
               return none
           else return none
       return ← instantiateMVars (mkAppN fn metas)
     else return none
+
+def isDefEqForce (u v : Expr) : MetaM Bool := do
+  match u, v with
+  | app f a, app f' a' => isDefEqForce f f' <&&> isDefEqForce a a'
+  | _, _ => isDefEqGuarded u v
 
 /-- Monomorphizes the head of `e`, creating a new monomorphization metavariable if necessary. -/
 partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
@@ -200,7 +204,7 @@ partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
               mono := s.mono.insert fn (⟨specMvarId, ⟨abstracted, paramNames.toList⟩⟩ :: cachedSpec)
             }
             let _ ← addConstants monoPattern.getUsedConstantsAsSet
-            let success ← isDefEq monoPattern e
+            let success ← isDefEqForce monoPattern e
             if !success then
               logWarning s!"Failed to monomorphize {fn}"
               return .continue
@@ -278,14 +282,11 @@ def monomorphizeConst (name : Name) : MonoM (List Expr) := do
   -- Filter for instImplicit arguments and put them into todo list.
   let instImplicitTypes ← instImplicit.mapM fun mvar => do mvar.mvarId!.getType
   let todo := (← getInstanceTypes body).insertMany instImplicitTypes.toList
-
   unifyWithCand todo.toList (← get).candidateInsts.toList do
     for mvar in instImplicit do
       let mty ← instantiateMVars (← mvar.mvarId!.getType)
       match ← trySynthInstance mty with
-      | .some inst => do
-        let success ← isDefEq mvar inst
-        assert! success
+      | .some inst => do let _ ← isDefEqGuarded mvar inst
       | .none => return none
       | .undef => pure ()
 
