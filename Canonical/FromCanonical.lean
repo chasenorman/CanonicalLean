@@ -66,7 +66,7 @@ mutual
       modify (·.insertMany (names.zip ids))
 
       let spine ← if t.spine.head == "<synthInstance>" then do
-        if let .some result ← trySynthInstance body then pure result
+        if let .some result ← withoutArityUnfold do trySynthInstance body then pure result
           else pure (← mkFreshExprMVar none)
       else fromSpine t.spine
 

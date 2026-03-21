@@ -41,7 +41,7 @@ def toHead : Expr → MetaM (Name × Expr)
   | .natVal n => .num .anonymous n
   | .strVal s => .str .anonymous s!"\"{s}\""
   return (name, l.type)
-| _ => unreachable!
+| e => do panic! s!"toHead called with on {← Meta.ppExpr e}"
 
 def toNameString (e : Expr) : MetaM String := return (← toHead e).1.toString
 

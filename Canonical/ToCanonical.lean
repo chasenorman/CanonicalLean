@@ -39,7 +39,8 @@ mutual
   /-- Translate an `Expr` `e` of type `type` to a `Term`.
       `arities` are the expected parameter arities, `params` accumulate via recursive calls. -/
   partial def toTerm (e : Expr) (type : Expr) (arities : List Arity) (synthInst : Bool := true) (params : Array Var := #[]) : ToCanonicalM Term := withIncRecDepth do
-    match ← whnf type with
+    -- dbg_trace s!"toTerm {← Meta.ppExpr e} : {← Meta.ppExpr type}"
+    match ← withTransparency .all do whnf type with
     | forallE name binderType body info =>
       withLocalDecl name info binderType fun fvar =>
         match arities with

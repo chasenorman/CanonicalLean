@@ -148,31 +148,25 @@ def transformMVar [Monad n] [MonadLiftT MetaM n] [MonadMCtx n] (goal : MVarId) (
     Add all instImplicit subterms as candidate instances. -/
 partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
   withApp e fun fn args => do
-    if let some (_, type, levels) ← getHeadInfo fn then
-      -- Assign new metavariable levels so outputs are independent of levels.
-      let mvarlevels ← mkFreshLevelMVars levels.length
-      let fn := fn.instantiateLevelParams levels mvarlevels
-      let (metas, binders, _) ← forallMetaTelescopeReducing
-        (type.instantiateLevelParams levels mvarlevels)
-      -- Check that `e` is eta expanded.
-      if metas.size != args.size then return none
-      for i in [0:binders.size] do
-        if binders[i]!.isInstImplicit then
-          if let some childPattern ← monoPattern (← unfoldInstDefn args[i]!) then
-            let _ ← addAsCandidate childPattern
-            -- Assign metas[i] to the child pattern.
-            let success ← isDefEq metas[i]! childPattern
-            if !success then
-              logWarning s!"Monomorphization failure: {e}"
-              return none
-          else return none
-      return ← instantiateMVars (mkAppN fn metas)
-    else return none
-
-def isDefEqForce (u v : Expr) : MetaM Bool := do
-  match u, v with
-  | app f a, app f' a' => isDefEqForce f f' <&&> isDefEqForce a a'
-  | _, _ => isDefEqGuarded u v
+    let some (_, type, levels) ← getHeadInfo fn | return none
+    -- Assign new metavariable levels so outputs are independent of levels.
+    let mvarlevels ← mkFreshLevelMVars levels.length
+    let fn := fn.instantiateLevelParams levels mvarlevels
+    let (metas, binders, _) ← forallMetaTelescopeReducing
+      (type.instantiateLevelParams levels mvarlevels)
+    -- Check that `e` is eta expanded.
+    if metas.size != args.size then return none
+    for i in [0:binders.size] do
+      if binders[i]!.isInstImplicit then
+        let some childPattern ← monoPattern (← unfoldInstDefn args[i]!) | return none
+        addAsCandidate childPattern
+        -- Assign `metas[i]` to the child pattern. Use `isDefEq` to create a valid term.
+        let success ← withReader ({ · with univApprox := false }) do
+          isDefEq metas[i]! childPattern
+        if !success then
+          logWarning s!"Monomorphization failure: {e}"
+          return none
+    instantiateMVars (mkAppN fn metas)
 
 /-- Monomorphizes the head of `e`, creating a new monomorphization metavariable if necessary. -/
 partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
@@ -194,20 +188,25 @@ partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
         -- Otherwise, create a monomorphization.
         if let some monoPattern ← monoPattern e then
           if ← onlyHasGlobalFVars monoPattern then
+            -- Abstract monoPattern before isDefEq, so as to not assign the mvars.
             let monoPattern ← instantiateMVars monoPattern
             let ⟨paramNames, mvars, abstracted⟩ ← abstractMVars monoPattern
             let specName := Name.mkSimple (((← toName fn).num cachedSpec.length).toStringWithSep "_" true)
             let specMvarId := (← mkFreshExprMVar (← inferType
               (abstracted.instantiateLevelParams paramNames.toList (← mkFreshLevelMVars paramNames.size))) .syntheticOpaque specName).mvarId!
+
+            let _ ← addConstants monoPattern.getUsedConstantsAsSet
+
+            let success ← withoutProofIrrelevance do isDefEq monoPattern e
+            if !success then
+              panic! s!"MATCH: {monoPattern}\nWITH: {e}\n\n"
+              logWarning s!"Failed to monomorphize {fn}"
+              return .continue
+
             -- Add this to mono state.
             modify fun s => { s with
               mono := s.mono.insert fn (⟨specMvarId, ⟨abstracted, paramNames.toList⟩⟩ :: cachedSpec)
             }
-            let _ ← addConstants monoPattern.getUsedConstantsAsSet
-            let success ← isDefEqForce monoPattern e
-            if !success then
-              logWarning s!"Failed to monomorphize {fn}"
-              return .continue
 
             let newExpr ← instantiateMVars (mkAppN (.mvar specMvarId) mvars)
             return .continue newExpr

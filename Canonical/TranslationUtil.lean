@@ -95,14 +95,14 @@ def cyclic (g : AssocList String Definition) : Bool :=
 
 /-- Adds an edge to `g` corresponding to the lexicographic path ordering. -/
 partial def withConstraint (lhs rhs : Spine) (g : AssocList String Definition) : Option (AssocList String Definition) :=
-  (g.find? lhs.head).bind (fun defn =>
+  (g.find? lhs.head).bind fun defn =>
     if !g.contains rhs.head then
       g
     else if lhs.head == rhs.head then
-      (lhs.args.zip rhs.args).firstM (fun ⟨l, r⟩ => withConstraint l.spine r.spine g)
+      (lhs.args.zip rhs.args).firstM fun ⟨l, r⟩ => withConstraint l.spine r.spine g
     else
-      g.insert lhs.head { defn with neighbors := defn.neighbors.insert rhs.head }
-  )
+      let g' := g.insert lhs.head { defn with neighbors := defn.neighbors.insert rhs.head }
+      rhs.args.foldlM (fun currG r => withConstraint lhs r.spine currG) g'
 
 /-- Adds termination constraints for `rules` in the form of edges in `g`. -/
 def addConstraints (rules : Array Rule) : ToCanonicalM Bool := do
@@ -128,7 +128,8 @@ def elimSpecial (e : Expr) : MetaM Expr := do
           return rawRawNatLit n
       return e
     | proj type idx struct => do
-      let info := getStructureInfo (← getEnv) type
+      let .some info := getStructureInfo? (← getEnv) type
+        | throwError ".proj of non-structure {type} currently not supported."
       return mkAppN (← withTransparency .all do (mkProjection struct info.fieldNames[idx]!)) args
     | _ => return e
 
