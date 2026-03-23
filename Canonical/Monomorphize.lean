@@ -161,7 +161,7 @@ partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
         let some childPattern ← monoPattern (← unfoldInstDefn args[i]!) | return none
         addAsCandidate childPattern
         -- Assign `metas[i]` to the child pattern. Use `isDefEq` to create a valid term.
-        let success ← withReader ({ · with univApprox := false }) do
+        let success ← withConfig ({ · with univApprox := false }) do
           isDefEq metas[i]! childPattern
         if !success then
           logWarning s!"Monomorphization failure: {e}"
@@ -199,7 +199,6 @@ partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
 
             let success ← withoutProofIrrelevance do isDefEq monoPattern e
             if !success then
-              panic! s!"MATCH: {monoPattern}\nWITH: {e}\n\n"
               logWarning s!"Failed to monomorphize {fn}"
               return .continue
 
