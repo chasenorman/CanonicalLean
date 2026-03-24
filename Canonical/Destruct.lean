@@ -154,14 +154,22 @@ def destructTactic (goal : MVarId) (premises : Array Name) : MetaM (Bool × List
       return (true, (← mvars.mapM fun mvar => do pure (← mvar.mvarId!.introNP (count.take toRevert.size).sum)).toList)
     return (false, [← reverted.introNP toRevert.size])
 
+def getStruct (name : Name) : MetaM (Option Name) := do
+  let env ← getEnv
+  if let some (.ctorInfo info) := env.find? name then
+    if isStructure env info.name then
+      return info.name
+  return env.getProjectionStructureName? name
+
 def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (Option (MVarId × (Expr → MetaM Expr))) := do
+  let consts ← (← goal.getRelevantConstants).toArray.filterMapM getStruct
   let goal := (← mkFreshExprMVar (← goal.getType)).mvarId!
   goal.withContext do
     let typ ← goal.getType
     -- let level ← getLevel typ
     let dneg := ((← getEnv).find? ``Canonical.dneg).get!.value!
     let next := (← goal.apply (Canonical.apply dneg [typ]))[0]!
-    let destruct ← destructTactic next (STRUCTURES ++ names)
+    let destruct ← destructTactic next (STRUCTURES ++ names ++ consts)
     if !destruct.1 then
       return none
     let result := (destruct.2)[0]!

@@ -138,8 +138,8 @@ mutual
       return #[]
     if let some info := (← getEnv).getProjectionFnInfo? name then
       let ctorInfo ← getConstInfoCtor info.ctorName
-      let _ ← defineConst info.ctorName
-      return #[projRule name.toString info (info.ctorName.toString) ctorInfo (← typeArity1 decl.type)]
+      let _ ← withReader ({ · with noTypes := true }) do defineConst info.ctorName
+      return #[projRule name.toString info info.ctorName.toString ctorInfo (← typeArity1 decl.type)]
     if ← isMatcher name then
       let eqns ← Match.getEquationsFor name
       return ← eqns.eqnNames.mapM fun eqn => do

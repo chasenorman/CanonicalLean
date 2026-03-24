@@ -53,8 +53,9 @@ def getPremises (goal : MVarId) (premises_syntax : Option (TSyntax `Canonical.pr
   let mut structs := #[]
   if config.destruct then
     let env ← getEnv
-    structs := premises.filter fun name => isStructure env name
-    premises := premises.filter fun name => !isStructure env name
+    structs ← premises.filterMapM Destruct.getStruct
+    structs := structs ++ (premises.filter (isStructure env))
+    premises ← premises.filterM fun name => do pure (← Destruct.getStruct name).isNone
 
   if config.pi then
     premises := premises.push ``Pi
