@@ -110,6 +110,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
 
   if config.debug then
     Elab.admitGoal goal
+    save_typ typ "debug.json"
     dbg_trace typ
     return
 
