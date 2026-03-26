@@ -115,3 +115,22 @@ def apply (e : Expr) (args : List Expr) : Expr :=
     | .lam _name _type body _info =>
       apply (body.instantiate1 arg) args
     | _ => panic! "apply: expected a lambda, got {e}"
+
+partial def lambdaMetaTelescope' (e : Expr) (maxMVars? : Option Nat := none) (kind : MetavarKind := .natural) : MetaM (Array Expr × Array BinderInfo × Expr) :=
+  process #[] #[] 0 e
+where
+  process (mvars : Array Expr) (bis : Array BinderInfo) (j : Nat) (type : Expr) : MetaM (Array Expr × Array BinderInfo × Expr) := do
+    let finalize : Unit → MetaM (Array Expr × Array BinderInfo × Expr) := fun _ => do
+      let type := type.instantiateRevRange j mvars.size mvars
+      return (mvars, bis, type)
+    if maxMVars?.isEqSome mvars.size then
+      finalize ()
+    else
+      match type with
+      | .lam n d b bi =>
+        let d     := d.instantiateRevRange j mvars.size mvars
+        let mvar ← mkFreshExprMVar d kind n
+        let mvars := mvars.push mvar
+        let bis   := bis.push bi
+        process mvars bis j b
+      | _ => finalize ()

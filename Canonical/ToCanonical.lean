@@ -4,6 +4,7 @@ import Canonical.Monomorphize
 import Canonical.Reduction
 import Canonical.Simp
 import Canonical.TranslationUtil
+import Canonical.Destruct
 import Lean
 
 open Lean hiding Term
@@ -238,25 +239,42 @@ def registerSimpPremise (attribution : String) (type : Expr) : ToCanonicalM Bool
         return true
   return false
 
-/-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate. -/
-def definePremise (name : Name) (simpOnly : Bool := false) : ToCanonicalM Unit := do
+def monomorphizePremise (name : Name) : ToCanonicalM (Array (Expr × Expr × Name)) := do
   let info ← getConstInfo name
   if (← read).config.monomorphize then
     if (← getAllBinderInfos info.type).contains .instImplicit then
+      let mut result := #[]
       for ⟨expr, idx⟩ in (← withoutArityUnfold do monomorphizeConst name).zipIdx do
         let type ← inferType expr
-        -- check for success
         if !(← getAllBinderInfos type).contains .instImplicit then
           let monoName := Name.mkSimple ((name.num idx).toStringWithSep "_" true)
           let mvar := (← mkFreshExprMVar type .syntheticOpaque monoName).mvarId!
           mvar.assign expr
           let (mvarName, mvarType) ← toHead (.mvar mvar)
-          if !(← registerSimpPremise name.toString mvarType) && !simpOnly then
-            let _ ← define mvarName.toString mvarType
-      return
+          result := result.push (expr, mvarType, mvarName)
+      return result
+  return #[(← mkConstWithFreshMVarLevels name, info.type, name)]
 
-  if !(← registerSimpPremise name.toString info.type) && !simpOnly then
-    let _ ← defineConst name
+def destructPremise (premise : Expr × Expr × Name) (simp : Bool) : ToCanonicalM (Array (Expr × Expr × Name)) := do
+  if !simp then
+    if let some (construct, destruct) := (← (Destruct.separatePi premise.2.1 premise.2.2 .default).run (.ofArray (Destruct.STRUCTURES ++ (← read).structures))).1 then
+      let (metas, _, _) ← lambdaMetaTelescope' construct destruct.size .syntheticOpaque
+      let mut result := #[]
+      for (destruct, m) in destruct.zip metas do
+        let expr := destruct.bindingBody!.instantiate1 premise.1
+        m.mvarId!.assign expr
+        let (mvarName, mvarType) ← toHead m
+        result := result.push (expr, mvarType, mvarName)
+      return result
+  return #[premise]
+
+/-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate. -/
+def definePremise (const : Name) (simpOnly : Bool := false) : ToCanonicalM Unit := do
+  for premise in ← monomorphizePremise const do
+    for (_expr, type, name) in ← destructPremise premise simpOnly do
+      if !(← registerSimpPremise const.toString type) && !simpOnly then
+        if name == const then let _ ← defineConst name
+        else let _ ← define name.toString type
 
 def addSimpLemmas : ToCanonicalM Unit := do
   withReader (fun ctx => { ctx with polarity := .premise }) do
