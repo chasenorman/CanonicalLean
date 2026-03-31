@@ -103,7 +103,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
   let goal ← getMainGoal
   let (premises, structs) ← getPremises goal premises_syntax config
 
-  let (goal', reconstruct) ← preprocess goal config structs
+  let (goal', reconstruct) ← withArityUnfold config.monomorphize do preprocess goal config structs
 
   let typ ← withArityUnfold config.monomorphize do goal'.withContext do
     toCanonical (← goal'.getType) premises (structs.push ``Pi) config

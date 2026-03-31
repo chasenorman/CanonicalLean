@@ -40,7 +40,6 @@ mutual
   /-- Translate an `Expr` `e` of type `type` to a `Term`.
       `arities` are the expected parameter arities, `params` accumulate via recursive calls. -/
   partial def toTerm (e : Expr) (type : Expr) (arities : List Arity) (synthInst : Bool := true) (params : Array Var := #[]) : ToCanonicalM Term := withIncRecDepth do
-    -- dbg_trace s!"toTerm {← Meta.ppExpr e} : {← Meta.ppExpr type}"
     match ← withTransparency .all do whnf type with
     | forallE name binderType body info =>
       withLocalDecl name info binderType fun fvar =>
@@ -215,11 +214,12 @@ mutual
             let id := x.fvarId!
             pure (id, ← typeArity (← id.getType)))
           withReader (fun ctx => { ctx with arities := ctx.arities.insertMany arities }) do
-            -- convert an equality of functions into an extensional equality of their applications
-            let lhs ← toSpine (← whnf (mkAppN lhs txs)) (synthInst := false)
-            if returnInvalid || (← validSimpLemma (xs ++ txs) lhs) then
-              return some ⟨lhs, ← toSpine (← whnf (mkAppN rhs txs)), attribution, true⟩
-            else return none
+            withConfig (fun cfg => { cfg with iota := false }) do
+              -- convert an equality of functions into an extensional equality of their applications
+              let lhs ← toSpine (← whnf (mkAppN lhs txs)) (synthInst := false)
+              if returnInvalid || (← validSimpLemma (xs ++ txs) lhs) then
+                return some ⟨lhs, ← toSpine (← whnf (mkAppN rhs txs)), attribution, true⟩
+              else return none
 
 end
 
@@ -244,7 +244,7 @@ def monomorphizePremise (name : Name) : ToCanonicalM (Array (Expr × Expr × Nam
   if (← read).config.monomorphize then
     if (← getAllBinderInfos info.type).contains .instImplicit then
       let mut result := #[]
-      for ⟨expr, idx⟩ in (← withoutArityUnfold do monomorphizeConst name).zipIdx do
+      for ⟨expr, idx⟩ in (← monomorphizeConst name).zipIdx do
         let type ← inferType expr
         if !(← getAllBinderInfos type).contains .instImplicit then
           let monoName := Name.mkSimple ((name.num idx).toStringWithSep "_" true)
@@ -255,14 +255,19 @@ def monomorphizePremise (name : Name) : ToCanonicalM (Array (Expr × Expr × Nam
       return result
   return #[(← mkConstWithFreshMVarLevels name, info.type, name)]
 
-def destructPremise (premise : Expr × Expr × Name) (simp : Bool) : ToCanonicalM (Array (Expr × Expr × Name)) := do
-  if !simp then
-    if let some (construct, destruct) := (← (Destruct.separatePi premise.2.1 premise.2.2 .default).run (.ofArray (Destruct.STRUCTURES ++ (← read).structures))).1 then
+def destructPremise (const : Name) (premise : Expr × Expr × Name) (simp : Bool) : ToCanonicalM (Array (Expr × Expr × Name)) := do
+  if !simp && (← read).config.destruct then
+    let structures := NameSet.ofArray (Destruct.STRUCTURES ++ (← read).structures)
+    let structures := if let .some struct := ← Destruct.getStruct const then structures.erase struct else structures
+    if let (some (construct, destruct), _) ← (Destruct.separatePi premise.2.1 premise.2.2 .default).run structures then
       let (metas, _, _) ← lambdaMetaTelescope' construct destruct.size .syntheticOpaque
       let mut result := #[]
       for (destruct, m) in destruct.zip metas do
         let expr := destruct.bindingBody!.instantiate1 premise.1
-        m.mvarId!.assign expr
+        -- m.mvarId!.assign expr
+        modifyThe MonoState fun s => { s with
+          mono := s.mono.insert (.sort .zero) (⟨m.mvarId!, ⟨expr, []⟩⟩ :: ((s.mono.get? (.sort .zero)).getD []))
+        }
         let (mvarName, mvarType) ← toHead m
         result := result.push (expr, mvarType, mvarName)
       return result
@@ -271,7 +276,7 @@ def destructPremise (premise : Expr × Expr × Name) (simp : Bool) : ToCanonical
 /-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate. -/
 def definePremise (const : Name) (simpOnly : Bool := false) : ToCanonicalM Unit := do
   for premise in ← monomorphizePremise const do
-    for (_expr, type, name) in ← destructPremise premise simpOnly do
+    for (_expr, type, name) in ← destructPremise const premise simpOnly do
       if !(← registerSimpPremise const.toString type) && !simpOnly then
         if name == const then let _ ← defineConst name
         else let _ ← define name.toString type

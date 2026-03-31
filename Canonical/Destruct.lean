@@ -112,7 +112,7 @@ mutual
         let (construct, destruct) := separate.getD (Canonical.identity name' type', #[Canonical.identity name' type'])
         lambdaBoundedTelescope construct destruct.size fun fvars construct => do
           forallTelescopeReducingSeparate (body.instantiate1 fvar) (body'.instantiate1 construct) k (xs.push fvar) (xs' ++ fvars) (separations.push (separate.isSome, construct, destruct))
-    | _, _ => k xs e xs' separations e'
+    | e, e' => k xs e xs' separations e'
 
   partial def separateApp (e : Expr) (name : Name) (binfo : BinderInfo) : DestructM (Option (Expr × Array Expr)) := do
     withLocalDecl name binfo e fun fvar => do
@@ -141,13 +141,14 @@ end
 def destructTactic (goal : MVarId) (premises : Array Name) : MetaM (Bool × List (Array FVarId × MVarId)) := do
   let toRevert ← goal.withContext do
     let mut toRevert := #[]
+    let instances ←  (← getLCtx).getFVarIds.filterM fun name => do pure (← name.getBinderInfo).isInstImplicit
     for fvarId in (← getLCtx).getFVarIds do
-      unless (← fvarId.getDecl).isAuxDecl do
+      unless (← fvarId.getDecl).isAuxDecl || (← instances.anyM fun inst => do localDeclDependsOn (← inst.getDecl) fvarId) || (instances.contains fvarId) do
         toRevert := toRevert.push fvarId
     pure toRevert
   let (_xs, reverted) ← goal.revert toRevert
   reverted.withContext do
-    let separated ← ((separatePi (← reverted.getType) `destruct .default) : DestructM _).run (.ofList premises.toList)
+    let separated ← ((separatePi (← reverted.getType) `destruct .default) : DestructM _).run (.ofArray premises)
     if let (some (construct, destruct), count) := separated then
       let (mvars, _, construct) ← lambdaMetaTelescope construct destruct.size
       reverted.assign construct
@@ -162,12 +163,14 @@ def getStruct (name : Name) : MetaM (Option Name) := do
   return env.getProjectionStructureName? name
 
 def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (Option (MVarId × (Expr → MetaM Expr))) := do
+  let env ← getEnv
   let consts ← (← goal.getRelevantConstants).toArray.filterMapM getStruct
+  let consts ← consts.filterM fun name => do pure !isClass env name
   let goal := (← mkFreshExprMVar (← goal.getType)).mvarId!
   goal.withContext do
     let typ ← goal.getType
     -- let level ← getLevel typ
-    let dneg := ((← getEnv).find? ``Canonical.dneg).get!.value!
+    let dneg := (env.find? ``Canonical.dneg).get!.value!
     let next := (← goal.apply (Canonical.apply dneg [typ]))[0]!
     let destruct ← destructTactic next (STRUCTURES ++ names ++ consts)
     if !destruct.1 then

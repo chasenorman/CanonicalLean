@@ -59,6 +59,7 @@ structure Context where
   config: CanonicalConfig
   polarity: Polarity := .goal
   structures: Array Name
+  ruleDepth : Nat := 0
 
 /-- The `definitions` to be sent to Canonical,
     and the number of them which have types. -/

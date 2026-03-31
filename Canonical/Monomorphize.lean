@@ -153,7 +153,7 @@ partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
     let mvarlevels ← mkFreshLevelMVars levels.length
     let fn := fn.instantiateLevelParams levels mvarlevels
     let (metas, binders, _) ← forallMetaTelescopeReducing
-      (type.instantiateLevelParams levels mvarlevels)
+      (type.instantiateLevelParams levels mvarlevels) args.size
     -- Check that `e` is eta expanded.
     if metas.size != args.size then return none
     for i in [0:binders.size] do
@@ -161,8 +161,7 @@ partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
         let some childPattern ← monoPattern (← unfoldInstDefn args[i]!) | return none
         addAsCandidate childPattern
         -- Assign `metas[i]` to the child pattern. Use `isDefEq` to create a valid term.
-        let success ← withConfig ({ · with univApprox := false }) do
-          isDefEq metas[i]! childPattern
+        let success ← isDefEq metas[i]! childPattern
         if !success then
           logWarning s!"Monomorphization failure: {e}"
           return none
@@ -170,7 +169,7 @@ partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
 
 /-- Monomorphizes the head of `e`, creating a new monomorphization metavariable if necessary. -/
 partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
-  withApp e fun fn _ => do
+  withOptions (backward.isDefEq.respectTransparency.set · false) do withApp e fun fn _ => do
     if let some (fn, type, _) ← getHeadInfo fn then
       let hasInstImplicit ← forallTelescopeReducing type fun xs _ =>
         do xs.anyM fun x => do pure (← x.fvarId!.getBinderInfo).isInstImplicit
@@ -186,7 +185,7 @@ partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
             return .continue newExpr
 
         -- Otherwise, create a monomorphization.
-        if let some monoPattern ← monoPattern e then
+        if let some monoPattern ← withConfig ({ · with univApprox := false }) do monoPattern e then
           if ← onlyHasGlobalFVars monoPattern then
             -- Abstract monoPattern before isDefEq, so as to not assign the mvars.
             let monoPattern ← instantiateMVars monoPattern
@@ -219,7 +218,7 @@ def preprocessMono (e : Expr) : MonoM Expr := do
 def finalizeMonos : MonoM Unit := do
   (← get).mono.values.flatten.forM fun mono =>
     do if !(← mono.id.isAssigned) then
-        mono.id.assign mono.assignment.expr
+      mono.id.assign mono.assignment.expr
 
 /-- Get the types of all instImplicit subterms in `e`. -/
 partial def getInstanceTypes (e : Expr) : MetaM (HashSet Expr) := do
@@ -280,6 +279,7 @@ def monomorphizeConst (name : Name) : MonoM (List Expr) := do
   -- Filter for instImplicit arguments and put them into todo list.
   let instImplicitTypes ← instImplicit.mapM fun mvar => do mvar.mvarId!.getType
   let todo := (← getInstanceTypes body).insertMany instImplicitTypes.toList
+  withOptions (backward.isDefEq.respectTransparency.set · false) do
   unifyWithCand todo.toList (← get).candidateInsts.toList do
     for mvar in instImplicit do
       let mty ← instantiateMVars (← mvar.mvarId!.getType)
