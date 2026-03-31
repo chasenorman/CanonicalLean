@@ -45,12 +45,12 @@ def fromHead (s : String) : FromCanonicalM (Expr × Expr) := do
     return (mkNatLit n, .const ``Nat [])
   else if s.startsWith "\"" && s.endsWith "\"" then
     return (mkStrLit ((s.drop 1).dropEnd 1).toString, .const ``String [])
+  else if let some id := (← getMCtx).findUserName? s.toName then
+    return (← instantiateMVars (.mvar id), ← id.getType)
   else if let some info := (← getEnv).find? s.toName then
     return (← mkConstWithFreshMVarLevels info.name, info.type)
   else if let some id := (← get).get? s then
     return (.fvar id, ← id.getType)
-  else if let some id := (← getMCtx).findUserName? s.toName then
-    return (← instantiateMVars (.mvar id), ← id.getType)
   else
     let name := (s.dropWhile (!·.isAlphanum)).takeWhile (·.isAlphanum)
     return (← mkFreshExprMVar none (userName := name.toName), .sort .zero)

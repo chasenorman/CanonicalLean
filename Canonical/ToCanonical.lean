@@ -239,7 +239,7 @@ def registerSimpPremise (attribution : String) (type : Expr) : ToCanonicalM Bool
         return true
   return false
 
-def monomorphizePremise (name : Name) : ToCanonicalM (Array (Expr × Expr × Name)) := do
+def monomorphizePremise (name : Name) : ToCanonicalM (Bool × Array (Expr × Expr × Name)) := do
   let info ← getConstInfo name
   if (← read).config.monomorphize then
     if (← getAllBinderInfos info.type).contains .instImplicit then
@@ -252,10 +252,10 @@ def monomorphizePremise (name : Name) : ToCanonicalM (Array (Expr × Expr × Nam
           mvar.assign expr
           let (mvarName, mvarType) ← toHead (.mvar mvar)
           result := result.push (expr, mvarType, mvarName)
-      return result
-  return #[(← mkConstWithFreshMVarLevels name, info.type, name)]
+      return (true, result)
+  return (false, #[(← mkConstWithFreshMVarLevels name, info.type, name)])
 
-def destructPremise (const : Name) (premise : Expr × Expr × Name) (simp : Bool) : ToCanonicalM (Array (Expr × Expr × Name)) := do
+def destructPremise (const : Name) (premise : Expr × Expr × Name) (simp : Bool) : ToCanonicalM (Bool × Array (Expr × Expr × Name)) := do
   if !simp && (← read).config.destruct then
     let structures := NameSet.ofArray (Destruct.STRUCTURES ++ (← read).structures)
     let structures := if let .some struct := ← Destruct.getStruct const then structures.erase struct else structures
@@ -270,15 +270,17 @@ def destructPremise (const : Name) (premise : Expr × Expr × Name) (simp : Bool
         }
         let (mvarName, mvarType) ← toHead m
         result := result.push (expr, mvarType, mvarName)
-      return result
-  return #[premise]
+      return (true, result)
+  return (false, #[premise])
 
 /-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate. -/
 def definePremise (const : Name) (simpOnly : Bool := false) : ToCanonicalM Unit := do
-  for premise in ← monomorphizePremise const do
-    for (_expr, type, name) in ← destructPremise const premise simpOnly do
+  let (modified1, monomorphized) ← monomorphizePremise const
+  for premise in monomorphized do
+    let (modified2, destructed) ← destructPremise const premise simpOnly
+    for (_expr, type, name) in destructed do
       if !(← registerSimpPremise const.toString type) && !simpOnly then
-        if name == const then let _ ← defineConst name
+        if !modified1 && !modified2 then let _ ← defineConst const
         else let _ ← define name.toString type
 
 def addSimpLemmas : ToCanonicalM Unit := do
