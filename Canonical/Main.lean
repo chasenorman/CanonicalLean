@@ -19,7 +19,7 @@ structure CanonicalResult where
 deriving Inhabited
 
 /-- Generate terms of a given type, with given timeout and desired count. -/
-@[never_extract, extern "canonical"] opaque canonical : @& Typ → UInt64 → USize → IO CanonicalResult
+@[never_extract, extern "canonical"] opaque canonical : @& Typ → String → UInt64 → USize → IO CanonicalResult
 
 /-- Terminate all invocations of `canonical` that are currently running. -/
 @[never_extract, extern "cancel"] opaque cancel : IO Unit
@@ -63,9 +63,9 @@ def getPremises (goal : MVarId) (premises_syntax : Option (TSyntax `Canonical.pr
   return (premises, structs)
 
 /-- Run Canonical asynchronously, so that we can check for cancellation. -/
-def runCanonical (typ : Typ) (timeout : UInt64) (config : CanonicalConfig) : MetaM CanonicalResult := do
+def runCanonical (typ : Typ) (name : String) (timeout : UInt64) (config : CanonicalConfig) : MetaM CanonicalResult := do
   checkInterrupted
-  let task ← IO.asTask (prio := .dedicated) (canonical typ timeout config.count)
+  let task ← IO.asTask (prio := .dedicated) (canonical typ name timeout config.count)
   while !(← IO.hasFinished task) do
     if ← interrupted then
       cancel
@@ -136,6 +136,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
     return
 
   let timeout := if let some timeout := timeout_syntax then UInt64.ofNat timeout.getNat else 5
-  let result ← runCanonical typ timeout config
+  let name := ((← Lean.Elab.Term.getDeclName?).map toString).getD "proof"
+  let result ← runCanonical typ name timeout config
   let proofs ← postprocess result goal' config reconstruct
   present proofs goal premises_syntax timeout_syntax
