@@ -1,7 +1,7 @@
 import Lean
 import Canonical.Util
 
-open Lean Meta Expr Elab Tactic Core
+open Lean Meta Expr Core
 
 namespace Destruct
 
@@ -181,24 +181,3 @@ def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (Option (MVar
     let assignment ← betaReduce assignment
     return (result.2, fun x => do
       betaReduce (Canonical.apply assignment [← mkLambdaFVars (result.1.map .fvar) x]))
-
-syntax (name := destruct) "destruct " ("[" ident,* "]")? : tactic
-
-/-- Eliminates structure types by unpacking them.  -/
-@[tactic destruct] def evalDestruct : Tactic
-| `(tactic| destruct [$ids:ident,*]) => do
-  let names ← ids.getElems.mapM resolveGlobalConstNoOverload
-  liftMetaTactic fun x => do
-    let destruct ← destructTactic x (STRUCTURES ++ names)
-    if !destruct.1 then
-      logWarning "destruct made no progress."
-    pure (destruct.2.map (·.2))
-| `(tactic| destruct) => do
-  liftMetaTactic fun x => do
-    let destruct ← destructTactic x STRUCTURES
-    if !destruct.1 then
-      logWarning "destruct made no progress."
-    pure (destruct.2.map (·.2))
-| _ => throwUnsupportedSyntax
-
-end Destruct

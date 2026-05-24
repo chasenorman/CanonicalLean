@@ -1,10 +1,8 @@
-import Canonical.Basic
-import Canonical.Util
-import Canonical.Monomorphize
+import Canonical.Monomorphize.Basic
+import Canonical.TranslationUtil
+import Canonical.Destruct.Basic
 import Canonical.Reduction
 import Canonical.Simp
-import Canonical.TranslationUtil
-import Canonical.Destruct
 import Lean
 
 open Lean hiding Term

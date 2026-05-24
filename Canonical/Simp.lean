@@ -30,6 +30,7 @@ partial def getOrigins (constSet : NameSet) (trie : Trie SimpTheorem) : Array Or
 def getRelevantSimpTheorems (constSet : NameSet) : MetaM (Array Name) := do
   let thms ← getSimpTheorems
   let tries ← constSet.toArray.filterMapM fun x => do
+    -- TODO consider using something other than `typeArity1`.
     pure (thms.post.root.find? (.const x (← typeArity1 (← getConstInfo x).type)))
   let origins := tries.flatMap (getOrigins constSet)
   let names := origins.filterMap fun x =>

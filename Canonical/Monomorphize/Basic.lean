@@ -1,6 +1,5 @@
 import Lean
-open Lean Elab Tactic Expr Std
-open Meta
+open Lean Expr Std Meta
 
 namespace Monomorphize
 
@@ -359,18 +358,3 @@ def monomorphizeTactic (goal : MVarId) (ids : Array Syntax) (config : MonoConfig
     let _ ← goal.modifyLCtx fun _ => lctx
     goal.replaceTargetDefEq type
   else return goal
-
-syntax (name := monomorphize) "monomorphize " Parser.Tactic.optConfig ("[" ident,* "]")? : tactic
-
-@[tactic monomorphize] def evalMonomorphize : Tactic
-| `(tactic| monomorphize $config [$ids:ident,*]) => do
-  let config ← monoConfig config
-  liftMetaTactic1 fun goal =>
-    goal.withContext do
-      (monomorphizeTactic goal ids.getElems config).run' { globalFVars := HashSet.ofArray (← getLCtx).getFVarIds }
-| `(tactic| monomorphize $config) => do
-  let config ← monoConfig config
-  liftMetaTactic1 fun goal =>
-    goal.withContext do
-      (monomorphizeTactic goal #[] config).run' { globalFVars := HashSet.ofArray (← getLCtx).getFVarIds }
-| _ => throwUnsupportedSyntax

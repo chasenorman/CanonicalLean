@@ -1,6 +1,5 @@
 import Canonical.Basic
 import Canonical.Util
-import Canonical.Monomorphize
 
 open Lean hiding Term
 open Meta Std
@@ -36,7 +35,6 @@ def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (construc
   let fieldArgs : Array Term := Array.ofFn (fun (i : Fin (arity - projInfo.numParams - 1)) => { spine := { head := "arg" ++ toString i.val } })
   let args : Array Term := ((Array.replicate projInfo.numParams wildcard).push { spine := { head := constructor, args := ctorArgs } }) ++ fieldArgs
   ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, #[], true⟩
-
 
 /-- Rule corresponding to ι-reduction -/
 def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (constructorVal : ConstructorVal) (rhs : Term) : Rule :=

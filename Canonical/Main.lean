@@ -1,7 +1,6 @@
 import Canonical.ToCanonical
 import Canonical.FromCanonical
 import Canonical.Refine
-import Canonical.Destruct
 import Canonical.Preprocess
 
 namespace Canonical

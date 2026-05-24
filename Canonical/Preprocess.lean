@@ -1,4 +1,4 @@
-import Canonical.Destruct
+import Canonical.Destruct.Basic
 import Canonical.TranslationUtil
 import Lean
 

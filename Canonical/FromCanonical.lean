@@ -1,5 +1,5 @@
 import Canonical.Basic
-import Canonical.ToCanonical
+import Canonical.Util
 import Lean
 
 namespace Canonical
