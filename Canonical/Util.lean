@@ -1,9 +1,15 @@
-import Canonical.Symbols
+module
+
 import Lean
+public import Lean.Data.NameMap.Basic
+public import Lean.Expr
+public import Lean.Meta.Basic
 
 open Lean Meta Expr Name
 
 namespace Canonical
+
+public section
 
 def UNFOLD_HARD_CODE : NameSet := .ofList [
   `Set.instMembership, `Set.Mem, `setOf, `instLENat

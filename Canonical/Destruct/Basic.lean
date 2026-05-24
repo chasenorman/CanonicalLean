@@ -1,9 +1,16 @@
+module
+
 import Lean
 import Canonical.Util
+import Canonical.Symbols
+public import Lean.Data.NameMap.Basic
+public import Lean.Meta.Basic
 
 open Lean Meta Expr Core
 
 namespace Destruct
+
+public section
 
 /-- The default structures that are unpacked by `destruct`. -/
 def STRUCTURES := #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array]

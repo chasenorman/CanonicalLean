@@ -1,6 +1,7 @@
 import Canonical.Basic
 import Canonical.Util
 import Canonical.Monomorphize.Basic
+import Canonical.Symbols
 import Lean
 
 open Lean hiding Term

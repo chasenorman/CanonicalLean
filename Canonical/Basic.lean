@@ -1,8 +1,12 @@
+module
+
 import Lean
 
-open Lean.Meta Lean.Elab
+open Lean Meta Elab
 
 namespace Canonical
+
+public section
 
 /-- A variable binding. -/
 structure Var where

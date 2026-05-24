@@ -1,5 +1,7 @@
-import Canonical.Destruct.Basic
-import Lean
+module
+
+public meta import Canonical.Destruct.Basic
+public import Lean.Elab.Tactic.Basic
 
 open Lean Elab Tactic
 
@@ -8,7 +10,7 @@ namespace Destruct
 syntax (name := destruct) "destruct " ("[" ident,* "]")? : tactic
 
 /-- Eliminates structure types by unpacking them.  -/
-@[tactic destruct] def evalDestruct : Tactic
+@[tactic destruct] public meta def evalDestruct : Tactic
 | `(tactic| destruct [$ids:ident,*]) => do
   let names ← ids.getElems.mapM resolveGlobalConstNoOverload
   liftMetaTactic fun x => do

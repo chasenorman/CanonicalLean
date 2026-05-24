@@ -1,5 +1,6 @@
 import Canonical.Basic
 import Canonical.Util
+import Canonical.Symbols
 import Lean
 
 namespace Canonical

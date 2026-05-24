@@ -1,7 +1,17 @@
+module
+
 import Lean
+public import Lean.Expr
+public import Lean.Util.InstantiateLevelParams
+public import Lean.Meta.Basic
+public import Lean.Meta.Transform
+public import Lean.Elab.Term.TermElabM
+public import Lean.Elab.Tactic.Basic
 open Lean Expr Std Meta
 
 namespace Monomorphize
+
+public section
 
 /-- An expression with `levels` as `param` universes. -/
 structure UnivAbstracted where
