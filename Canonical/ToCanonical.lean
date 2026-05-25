@@ -1,14 +1,19 @@
+module
+
 import Canonical.Monomorphize.Basic
-import Canonical.TranslationUtil
+public import Canonical.TranslationUtil
 import Canonical.Destruct.Basic
 import Canonical.Reduction
 import Canonical.Simp
+import Canonical.Symbols
 import Lean
 
 open Lean hiding Term
 open Meta Expr Std Monomorphize
 
 namespace Canonical
+
+public section
 
 mutual
   /-- Convert a type `Expr` `e` to a `Typ`. -/

@@ -1,10 +1,14 @@
+module
+
 import Canonical.Destruct.Basic
-import Canonical.TranslationUtil
+public import Canonical.TranslationUtil
 import Lean
 
 open Lean
 
 namespace Canonical
+
+public section
 
 def preprocessOfNat (e : Expr) : Expr :=
   e.replace fun e =>
@@ -31,5 +35,3 @@ def preprocess (goal : MVarId) (config : CanonicalConfig) (structs : Array Name)
     if let some (goal, transform) ← Destruct.destructCanonical goal structs then
       return (goal, fun x => do pure (preprocessOfNat (← transform x)))
   return (goal, fun x => pure (preprocessOfNat x))
-
-end Canonical

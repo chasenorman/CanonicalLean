@@ -1,9 +1,16 @@
-import Canonical.Basic
+module
+
+public import Std.Data.HashMap.Basic
+public import Lean.Expr
+public import Lean.Meta.Basic
+public import Canonical.Basic
 import Canonical.Util
 import Canonical.Symbols
 import Lean
 
 namespace Canonical
+
+public section
 
 open Lean hiding Term
 open Std Meta Syntax

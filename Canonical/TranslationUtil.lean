@@ -1,13 +1,21 @@
-import Canonical.Basic
-import Canonical.Util
-import Canonical.Monomorphize.Basic
-import Canonical.Symbols
+module
+
 import Lean
+public import Lean.Expr
+public import Lean.Elab.Term.TermElabM
+public import Lean.Elab.Tactic.Basic
+public import Lean.Data.AssocList
+public import Canonical.Basic
+public import Canonical.Util
+public import Canonical.Monomorphize.Basic
+import Canonical.Symbols
 
 open Lean hiding Term
 open Meta Expr Std Monomorphize
 
 namespace Canonical
+
+public section
 
 structure CanonicalConfig where
   /-- Canonical produces `count` proofs. -/

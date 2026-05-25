@@ -1,9 +1,14 @@
+module
+
 import Lean
 import Canonical.Util
+public import Lean.Meta.Tactic.Simp.SimpTheorems
 
 open Lean Meta Std DiscrTree Trie Key Expr
 
 namespace Canonical
+
+public section
 
 /-- Replacements for certain `@[simp]` theorems with alternative encodings. -/
 def SIMP_HARD_CODE : HashMap Name (Array Name) := .ofList [

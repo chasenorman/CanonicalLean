@@ -1,10 +1,16 @@
-import Canonical.Basic
+module
+
+public import Canonical.Basic
+public import Lean.Meta.Basic
+public import Lean.ProjFns
 import Canonical.Util
 
 open Lean hiding Term
 open Meta Std
 
 namespace Canonical
+
+public section
 
 /-- Placeholder for a term, not a reserved symbol. -/
 def wildcard : Term := { spine := { head := "*" } }
