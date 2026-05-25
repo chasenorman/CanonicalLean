@@ -142,3 +142,9 @@ where
         let bis   := bis.push bi
         process mvars bis j b
       | _ => finalize ()
+
+/-- A version of `Core.checkInterrupted` that does not crash. -/
+def interrupted : CoreM Bool := do
+  if ← IO.checkCanceled then return true
+  if let some tk := (← read).cancelTk? then return ← tk.isSet
+  else return false

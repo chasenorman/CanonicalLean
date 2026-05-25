@@ -1,9 +1,17 @@
+module
+
+public import Lean
+public import Canonical.Basic
+public import Canonical.TranslationUtil
+public import Canonical.Destruct.Basic
 import Canonical.ToCanonical
 import Canonical.FromCanonical
 import Canonical.Refine
 import Canonical.Preprocess
 
 namespace Canonical
+
+public section
 
 open Lean Parser Tactic Meta Elab Tactic Core LibrarySuggestions
 
@@ -25,41 +33,6 @@ deriving Inhabited
 
 /-- Start a server with the refinement UI on the given type. -/
 @[never_extract, extern "refine"] opaque refine : @& Typ → IO Unit
-
-/-- A version of `Core.checkInterrupted` that does not crash. -/
-def interrupted : CoreM Bool := do
-  if ← IO.checkCanceled then return true
-  if let some tk := (← read).cancelTk? then return ← tk.isSet
-  else return false
-
-syntax premises := " [" withoutPosition(term,*,?) "]"
-
-/-- Get the premises for inclusion, and structures to be unfolded, from the user-supplied list and the premise selector. -/
-def getPremises (goal : MVarId) (premises_syntax : Option (TSyntax `Canonical.premises)) (config : CanonicalConfig) : MetaM (Array Name × Array Name) := do
-  let mut premises ← if let some premises := premises_syntax then
-    match premises with
-    | `(premises| [$args,*]) => args.getElems.raw.mapM resolveGlobalConstNoOverload
-    | _ => Elab.throwUnsupportedSyntax
-    else pure #[]
-
-  if config.suggestions then
-    let found ← select goal
-    let found := found.insertionSort (fun a b => a.score > b.score)
-    let found := found.map (fun x => x.name)
-    let found := found.take 3
-    premises := premises ++ found
-
-  let mut structs := #[]
-  if config.destruct then
-    let env ← getEnv
-    structs ← premises.filterMapM Destruct.getStruct
-    structs := structs ++ (premises.filter (isStructure env))
-    premises ← premises.filterM fun name => do pure (← Destruct.getStruct name).isNone
-
-  if config.pi then
-    premises := premises.push ``Pi
-
-  return (premises, structs)
 
 /-- Run Canonical asynchronously, so that we can check for cancellation. -/
 def runCanonical (typ : Typ) (name : String) (timeout : UInt64) (config : CanonicalConfig) : MetaM CanonicalResult := do
@@ -95,47 +68,3 @@ def present (proofs : Array Expr) (goal : MVarId)
       TryThis.addExactSuggestion (← getRef) proofs[0]
     else
       TryThis.addExactSuggestions (← getRef) proofs
-
-/-- Canonical exhaustively searches for terms in dependent type theory. -/
-elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig premises_syntax:(premises)? : tactic => do
-  let config ← canonicalConfig config
-  let goal ← getMainGoal
-  let (premises, structs) ← getPremises goal premises_syntax config
-
-  let (goal', reconstruct) ← withArityUnfold config.monomorphize do preprocess goal config structs
-
-  let typ ← withArityUnfold config.monomorphize do goal'.withContext do
-    toCanonical (← goal'.getType) premises (structs.push ``Pi) config
-
-  if config.debug then
-    Elab.admitGoal goal
-    save_typ typ "debug.json"
-    dbg_trace typ
-    return
-
-  -- Refinement UI
-  if config.refine then
-    let _ ← refine typ
-    let fileMap ← getFileMap
-    let strRange := (← getRef).getRange?.getD (panic! "No range found!")
-    let range := fileMap.utf8RangeToLspRange strRange
-    let width := TryThis.getInputWidth (← getOptions)
-    let (indent, column) := TryThis.getIndentAndColumn fileMap strRange
-    let x ← Server.WithRpcRef.mk ({
-      goal := ← goal'.getType,
-      lctx := ((← getMCtx).getDecl goal').lctx,
-      mctx := ← getMCtx,
-      mainGoal := goal,
-      config,reconstruct, width, indent, column
-    } : Canonical.RpcData)
-    Elab.admitGoal goal
-    Widget.savePanelWidgetInfo (hash refineWidget.javascript) (← getRef) (props := do
-      let rpcData ← Server.RpcEncodable.rpcEncode x
-      return Json.mkObj [("rpcData", rpcData), ("range", ToJson.toJson range)])
-    return
-
-  let timeout := if let some timeout := timeout_syntax then UInt64.ofNat timeout.getNat else 5
-  let name := ((← Lean.Elab.Term.getDeclName?).map toString).getD "proof"
-  let result ← runCanonical typ name timeout config
-  let proofs ← postprocess result goal' config reconstruct
-  present proofs goal premises_syntax timeout_syntax

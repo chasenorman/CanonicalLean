@@ -1,3 +1,3 @@
-import Canonical.Main
+import Canonical.Tactic
 import Canonical.Destruct.Tactic
 import Canonical.Monomorphize.Tactic
