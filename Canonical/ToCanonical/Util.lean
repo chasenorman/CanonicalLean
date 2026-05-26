@@ -8,6 +8,7 @@ public import Lean.Data.AssocList
 public import Canonical.Basic
 public import Canonical.Util
 public import Canonical.Monomorphize.Basic
+import Canonical.Destruct.Basic
 import Canonical.Symbols
 
 open Lean hiding Term
@@ -147,3 +148,37 @@ def defineInstance (inhabited : Bool := true) : ToCanonicalM Typ := do
   modify (fun s => { s with definitions := (
     (s.definitions.insert "<instImplicit>" { arity := {}, type := .none }).insert "<synthInstance>" { arity := {}, type := .some typ } ).insert "<instUninhabited>" { arity := {}, type := .none } })
   return if inhabited then typ else { spine := { head := "<instUninhabited>" } }
+
+def monomorphizePremise (name : Name) : ToCanonicalM (Bool × Array (Expr × Expr × Name)) := do
+  let info ← getConstInfo name
+  if (← read).config.monomorphize then
+    if (← getAllBinderInfos info.type).contains .instImplicit then
+      let mut result := #[]
+      for ⟨expr, idx⟩ in (← monomorphizeConst name).zipIdx do
+        let type ← inferType expr
+        if !(← getAllBinderInfos type).contains .instImplicit then
+          let monoName := Name.mkSimple ((name.num idx).toStringWithSep "_" true)
+          let mvar := (← mkFreshExprMVar type .syntheticOpaque monoName).mvarId!
+          mvar.assign expr
+          let (mvarName, mvarType) ← toHead (.mvar mvar)
+          result := result.push (expr, mvarType, mvarName)
+      return (true, result)
+  return (false, #[(← mkConstWithFreshMVarLevels name, info.type, name)])
+
+def destructPremise (const : Name) (premise : Expr × Expr × Name) (simp : Bool) : ToCanonicalM (Bool × Array (Expr × Expr × Name)) := do
+  if !simp && (← read).config.destruct then
+    let structures := NameSet.ofArray (Destruct.STRUCTURES ++ (← read).structures)
+    let structures := if let .some struct := ← Destruct.getStruct const then structures.erase struct else structures
+    if let (some (construct, destruct), _) ← (Destruct.separatePi premise.2.1 premise.2.2 .default).run structures then
+      let (metas, _, _) ← lambdaMetaTelescope' construct destruct.size .syntheticOpaque
+      let mut result := #[]
+      for (destruct, m) in destruct.zip metas do
+        let expr := destruct.bindingBody!.instantiate1 premise.1
+        -- m.mvarId!.assign expr
+        modifyThe MonoState fun s => { s with
+          mono := s.mono.insert (.sort .zero) (⟨m.mvarId!, ⟨expr, []⟩⟩ :: ((s.mono.get? (.sort .zero)).getD []))
+        }
+        let (mvarName, mvarType) ← toHead m
+        result := result.push (expr, mvarType, mvarName)
+      return (true, result)
+  return (false, #[premise])

@@ -6,7 +6,7 @@ public import Lean.Meta.Basic
 public import Canonical.Basic
 import Canonical.Util
 import Canonical.Symbols
-import Lean
+import Lean.Meta
 
 namespace Canonical
 

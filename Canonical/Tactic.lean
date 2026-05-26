@@ -1,10 +1,9 @@
 module
 
 import Lean
-public meta import Canonical.TranslationUtil
+public meta import Canonical.ToCanonical.Util
 import Canonical.Symbols
-public meta import Canonical.Preprocess
-public meta import Canonical.ToCanonical
+public meta import Canonical.ToCanonical.Main
 public meta import Canonical.Main
 public meta import Canonical.Refine
 public meta import Canonical.Destruct.Basic
@@ -67,17 +66,13 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
   -- Refinement UI
   if config.refine then
     let _ ← refine typ
-    let fileMap ← getFileMap
-    let strRange := (← getRef).getRange?.getD (panic! "No range found!")
-    let range := fileMap.utf8RangeToLspRange strRange
-    let width := TryThis.getInputWidth (← getOptions)
-    let (indent, column) := TryThis.getIndentAndColumn fileMap strRange
+    let (width, indent, column, range) ← widthIndentColumnRange
     let x ← Server.WithRpcRef.mk ({
       goal := ← goal'.getType,
       lctx := ((← getMCtx).getDecl goal').lctx,
       mctx := ← getMCtx,
       mainGoal := goal,
-      config,reconstruct, width, indent, column
+      config, reconstruct, width, indent, column
     } : Canonical.RpcData)
     Elab.admitGoal goal
     Widget.savePanelWidgetInfo (hash refineWidget.javascript) (← getRef) (props := do

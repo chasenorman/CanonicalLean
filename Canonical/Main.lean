@@ -2,12 +2,11 @@ module
 
 public import Lean
 public import Canonical.Basic
-public import Canonical.TranslationUtil
+public import Canonical.ToCanonical.Util
 public import Canonical.Destruct.Basic
-import Canonical.ToCanonical
+import Canonical.ToCanonical.Main
 import Canonical.FromCanonical
 import Canonical.Refine
-import Canonical.Preprocess
 
 namespace Canonical
 
@@ -33,6 +32,12 @@ deriving Inhabited
 
 /-- Start a server with the refinement UI on the given type. -/
 @[never_extract, extern "refine"] opaque refine : @& Typ → IO Unit
+
+def preprocess (goal : MVarId) (config : CanonicalConfig) (structs : Array Name) : MetaM (MVarId × (Expr → MetaM Expr)) := do
+  if config.destruct then
+    if let some (goal, reconstruct) ← Destruct.destructCanonical goal structs then
+      return (goal, reconstruct)
+  return (goal, pure)
 
 /-- Run Canonical asynchronously, so that we can check for cancellation. -/
 def runCanonical (typ : Typ) (name : String) (timeout : UInt64) (config : CanonicalConfig) : MetaM CanonicalResult := do

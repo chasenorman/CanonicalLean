@@ -4,8 +4,9 @@ import Lean
 public import Lean.Data.NameMap.Basic
 public import Lean.Expr
 public import Lean.Meta.Basic
+public import Lean.Elab.Term.TermElabM
 
-open Lean Meta Expr Name
+open Lean Meta Expr Name Elab Tactic
 
 namespace Canonical
 
@@ -148,3 +149,11 @@ def interrupted : CoreM Bool := do
   if ← IO.checkCanceled then return true
   if let some tk := (← read).cancelTk? then return ← tk.isSet
   else return false
+
+def widthIndentColumnRange : TermElabM (Nat × Nat × Nat × Lsp.Range) := do
+  let fileMap ← getFileMap
+  let stxRange := (← getRef).getRange?.getD (panic! "No range found!")
+  let range := fileMap.utf8RangeToLspRange stxRange
+  let width := TryThis.getInputWidth (← getOptions)
+  let (indent, column) := TryThis.getIndentAndColumn fileMap stxRange
+  pure (width, indent, column, range)

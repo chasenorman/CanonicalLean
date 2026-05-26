@@ -2,7 +2,7 @@ module
 
 public meta import Canonical.FromCanonical
 public meta import Lean.Meta.Tactic.TryThis
-public import Canonical.TranslationUtil
+public import Canonical.ToCanonical.Util
 public import Lean.Server.Requests
 
 namespace Canonical
