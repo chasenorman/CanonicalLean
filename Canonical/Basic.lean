@@ -73,3 +73,21 @@ instance : ToString Rule where toString := ruleToString
 
 /-- Saves a JSON representation of the type to the given file. -/
 @[never_extract, extern "save_typ"] opaque save_typ : @& Typ → String → IO Unit
+
+structure Config where
+  /-- Canonical produces `count` proofs. -/
+  count: USize := 1
+  /-- Provide `(A → B) : Sort` as an axiom to Canonical. -/
+  pi: Bool := false
+  /-- Print the inhabitation problem sent to Canonical. -/
+  debug: Bool := false
+  /-- Open the refinement UI. -/
+  refine: Bool := false
+  /-- Allow Canonical to use `simp`. -/
+  simp: Bool := true
+  /-- Resolve typeclass instances in a preprocessing stage. -/
+  monomorphize: Bool := true
+  /-- Unpacks structure types in a preprocessing stage.  -/
+  destruct: Bool := true
+  /-- Add premises from the current premise selector. -/
+  suggestions: Bool := false

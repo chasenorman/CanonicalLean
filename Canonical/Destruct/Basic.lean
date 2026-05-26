@@ -3,7 +3,6 @@ module
 import Lean
 import Canonical.Util
 import Canonical.Symbols
-public import Lean.Data.NameMap.Basic
 public import Lean.Meta.Basic
 
 open Lean Meta Expr Core

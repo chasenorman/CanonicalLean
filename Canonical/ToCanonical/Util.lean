@@ -1,9 +1,6 @@
 module
 
 import Lean
-public import Lean.Expr
-public import Lean.Elab.Term.TermElabM
-public import Lean.Elab.Tactic.Basic
 public import Lean.Data.AssocList
 public import Canonical.Basic
 public import Canonical.Util
@@ -17,26 +14,6 @@ open Meta Expr Std Monomorphize
 namespace Canonical
 
 public section
-
-structure CanonicalConfig where
-  /-- Canonical produces `count` proofs. -/
-  count: USize := 1
-  /-- Provide `(A → B) : Sort` as an axiom to Canonical. -/
-  pi: Bool := false
-  /-- Print the inhabitation problem sent to Canonical. -/
-  debug: Bool := false
-  /-- Open the refinement UI. -/
-  refine: Bool := false
-  /-- Allow Canonical to use `simp`. -/
-  simp: Bool := true
-  /-- Resolve typeclass instances in a preprocessing stage. -/
-  monomorphize: Bool := true
-  /-- Unpacks structure types in a preprocessing stage.  -/
-  destruct: Bool := true
-  /-- Add premises from the current premise selector. -/
-  suggestions: Bool := false
-
-declare_config_elab canonicalConfig CanonicalConfig
 
 /-- Definition of a symbol during translation,
     to be converted into `(Let × Option Typ)` -/
@@ -64,7 +41,7 @@ structure Context where
   arities: HashMap FVarId Arity
   /-- All `define` invocations will set `.undef` type. -/
   noTypes: Bool := false
-  config: CanonicalConfig
+  config: Config
   polarity: Polarity := .goal
   structures: Array Name
   ruleDepth : Nat := 0

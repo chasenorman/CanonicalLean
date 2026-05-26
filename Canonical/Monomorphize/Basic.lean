@@ -1,11 +1,6 @@
 module
 
-import Lean
-public import Lean.Expr
-public import Lean.Util.InstantiateLevelParams
-public import Lean.Meta.Basic
-public import Lean.Meta.Transform
-public import Lean.Elab.Term.TermElabM
+import Lean.Meta
 public import Lean.Elab.Tactic.Basic
 open Lean Expr Std Meta
 

@@ -1,3 +1,6 @@
-import Canonical.Tactic
-import Canonical.Destruct.Tactic
-import Canonical.Monomorphize.Tactic
+module
+
+public import Canonical.Symbols
+public meta import Canonical.Tactic
+public meta import Canonical.Destruct.Tactic
+public meta import Canonical.Monomorphize.Tactic

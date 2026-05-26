@@ -1,10 +1,8 @@
 module
 
 public import Canonical.ToCanonical.Util
-import Canonical.Monomorphize.Basic
 import Canonical.ToCanonical.Translate
 import Canonical.ToCanonical.Reduction
-import Canonical.Symbols
 import Lean
 
 open Lean hiding Term
@@ -87,7 +85,7 @@ def toCanonical_ (goal : Expr) (premises : Array Name) : ToCanonicalM Typ := do
   }
 
 /-- Convert `goal` to a `Typ` with `premises` and all included definitions. -/
-def toCanonical (goal : Expr) (premises : Array Name) (structures : Array Name) (config : CanonicalConfig) : MetaM Typ := do
+def toCanonical (goal : Expr) (premises : Array Name) (structures : Array Name) (config : Config) : MetaM Typ := do
   let lctx ← getLCtx
   (((toCanonical_ goal premises).run
     {

@@ -1,7 +1,6 @@
 module
 
 public meta import Canonical.Monomorphize.Basic
-public import Lean.Elab.Tactic.Basic
 open Lean Elab Tactic
 
 namespace Monomorphize

@@ -1,8 +1,8 @@
 module
 
 public meta import Canonical.FromCanonical
-public meta import Lean.Meta.Tactic.TryThis
-public import Canonical.ToCanonical.Util
+public import Lean.Meta.Tactic.TryThis
+public import Canonical.Util
 
 namespace Canonical
 
@@ -12,9 +12,8 @@ open Lean Elab Meta Tactic
 
 /-- Data shared between the tactic process and RPC process. -/
 structure RpcData where
-  goal: Expr
-  config : CanonicalConfig
-  lctx: LocalContext
+  config: Config
+  processedGoal: MVarId
   mctx: MetavarContext
   mainGoal: MVarId
   reconstruct: Expr → MetaM Expr
@@ -39,16 +38,15 @@ open Server RequestM in
 meta def getRefinementStr (params : InsertParams) : RequestM (RequestTask String) :=
   withWaitFindSnapAtPos params.pos fun snap => do runTermElabM snap do
     let data := params.rpcData.val
-    withMCtx data.mctx do withLCtx' data.lctx do
-      withArityUnfold data.config.monomorphize do withOptions applyOptions do
-        let expr ← fromCanonical (← getRefinement) data.goal
-        let expr ← data.reconstruct expr
-        data.mainGoal.withContext do
-          let tm ← Lean.Meta.Tactic.TryThis.delabToRefinableSyntax expr
-          let stx ← `(tactic| refine $tm)
-          let fmt ← Lean.PrettyPrinter.ppCategory `tactic stx
-          let str := Std.Format.pretty fmt data.width data.indent data.column
-          pure str
+    withMCtx data.mctx do withArityUnfold data.config.monomorphize do withOptions applyOptions do
+      let expr ← data.processedGoal.withContext do
+        data.reconstruct (← fromCanonical (← getRefinement) (← data.processedGoal.getType))
+
+      data.mainGoal.withContext do
+        let tm ← Lean.Meta.Tactic.TryThis.delabToRefinableSyntax expr
+        let stx ← `(tactic| refine $tm)
+        let fmt ← Lean.PrettyPrinter.ppCategory `tactic stx
+        pure (Std.Format.pretty fmt data.width data.indent data.column)
 
 /-- The widget for the refinement UI. -/
 @[widget_module]

@@ -1,8 +1,10 @@
 module
 
 public import Lean
-public import Canonical.ToCanonical.Util
-public import Canonical.Destruct.Basic
+public import Canonical.Util
+public import Canonical.Basic
+import Canonical.Symbols
+import Canonical.Destruct.Basic
 import Canonical.FromCanonical
 
 namespace Canonical
@@ -30,14 +32,37 @@ deriving Inhabited
 /-- Start a server with the refinement UI on the given type. -/
 @[never_extract, extern "refine"] opaque refine : @& Typ → IO Unit
 
-def preprocess (goal : MVarId) (config : CanonicalConfig) (structs : Array Name) : MetaM (MVarId × (Expr → MetaM Expr)) := do
+/-- Get the premises for inclusion, and structures to be unfolded, from the user-supplied list and the premise selector. -/
+def getPremises (goal : MVarId) (consts : Array Name) (config : Config) : MetaM (Array Name × Array Name) := do
+  let mut premises := consts
+
+  if config.suggestions then
+    let found ← select goal
+    let found := found.insertionSort (fun a b => a.score > b.score)
+    let found := found.map (fun x => x.name)
+    let found := found.take 3
+    premises := premises ++ found
+
+  let mut structs := #[]
+  if config.destruct then
+    let env ← getEnv
+    structs ← premises.filterMapM Destruct.getStruct
+    structs := structs ++ (premises.filter (isStructure env))
+    premises ← premises.filterM fun name => do pure (← Destruct.getStruct name).isNone
+
+  if config.pi then
+    premises := premises.push ``Pi
+
+  return (premises, structs)
+
+def preprocess (goal : MVarId) (config : Config) (structs : Array Name) : MetaM (MVarId × (Expr → MetaM Expr)) := do
   if config.destruct then
     if let some (goal, reconstruct) ← Destruct.destructCanonical goal structs then
       return (goal, reconstruct)
   return (goal, pure)
 
 /-- Run Canonical asynchronously, so that we can check for cancellation. -/
-def runCanonical (typ : Typ) (name : String) (timeout : UInt64) (config : CanonicalConfig) : MetaM CanonicalResult := do
+def runCanonical (typ : Typ) (name : String) (timeout : UInt64) (config : Config) : MetaM CanonicalResult := do
   checkInterrupted
   let task ← IO.asTask (prio := .dedicated) (canonical typ name timeout config.count)
   while !(← IO.hasFinished task) do
@@ -48,7 +73,7 @@ def runCanonical (typ : Typ) (name : String) (timeout : UInt64) (config : Canoni
   IO.ofExcept task.get
 
 /-- Perform `fromCanonical` and `reconstruct` on the terms in `result`. -/
-def postprocess (result : CanonicalResult) (goal : MVarId) (config : CanonicalConfig) (reconstruct : Expr → MetaM Expr) : MetaM (Array Expr) := do
+def postprocess (result : CanonicalResult) (goal : MVarId) (config : Config) (reconstruct : Expr → MetaM Expr) : MetaM (Array Expr) := do
   withArityUnfold config.monomorphize do goal.withContext do
     let proofs ← result.terms.mapM fun term => do fromCanonical term (← goal.getType)
     let proofs ← proofs.mapM reconstruct
