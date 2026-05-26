@@ -1,12 +1,9 @@
 module
 
 public import Lean
-public import Canonical.Basic
 public import Canonical.ToCanonical.Util
 public import Canonical.Destruct.Basic
-import Canonical.ToCanonical.Main
 import Canonical.FromCanonical
-import Canonical.Refine
 
 namespace Canonical
 

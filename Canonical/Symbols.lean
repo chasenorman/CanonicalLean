@@ -1,10 +1,6 @@
 module
 
 public import Lean.PrettyPrinter.Delaborator.Basic
-public meta import Lean.Data.KVMap
-public meta import Lean.Exception
-public meta import Lean.CoreM
-public meta import Lean.PrettyPrinter.Delaborator.SubExpr
 public meta import Lean.PrettyPrinter.Delaborator.Basic
 
 open Lean Meta Expr Name

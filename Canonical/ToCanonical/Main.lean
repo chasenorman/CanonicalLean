@@ -1,10 +1,9 @@
 module
 
-import Canonical.Monomorphize.Basic
 public import Canonical.ToCanonical.Util
+import Canonical.Monomorphize.Basic
 import Canonical.ToCanonical.Translate
 import Canonical.ToCanonical.Reduction
-import Canonical.Simp
 import Canonical.Symbols
 import Lean
 

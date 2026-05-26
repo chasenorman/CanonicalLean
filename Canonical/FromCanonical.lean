@@ -1,7 +1,5 @@
 module
 
-public import Std.Data.HashMap.Basic
-public import Lean.Expr
 public import Lean.Meta.Basic
 public import Canonical.Basic
 import Canonical.Util

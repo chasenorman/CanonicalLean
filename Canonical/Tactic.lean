@@ -1,15 +1,9 @@
 module
 
-import Lean
-public meta import Canonical.ToCanonical.Util
 import Canonical.Symbols
 public meta import Canonical.ToCanonical.Main
 public meta import Canonical.Main
 public meta import Canonical.Refine
-public meta import Canonical.Destruct.Basic
-public import Lean.Expr
-public import Lean.Elab.Tactic.Basic
-public meta import Lean.LibrarySuggestions.Basic
 
 open Lean Parser Tactic Meta Elab Tactic Core LibrarySuggestions
 

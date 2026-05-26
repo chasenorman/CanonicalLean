@@ -1,12 +1,10 @@
 module
 
 import Lean
-public import Lean.Data.NameMap.Basic
-public import Lean.Expr
-public import Lean.Meta.Basic
 public import Lean.Elab.Term.TermElabM
+public import Lean.Meta.Tactic.Simp.SimpTheorems
 
-open Lean Meta Expr Name Elab Tactic
+open Lean Meta Expr Name Elab Tactic Std DiscrTree Trie Key
 
 namespace Canonical
 
@@ -35,15 +33,15 @@ partial def typeArity1 (e : Expr) : MetaM Nat := do
 
 /-- Given a head symbol `Expr`, returns a `Name` for serializing and its type. -/
 def toHead : Expr → MetaM (Name × Expr)
-| fvar id =>
+| .fvar id =>
   return (id.name.updatePrefix (← id.getUserName).getRoot, ← id.getType)
-| mvar id =>
+| .mvar id =>
   return (((← getMCtx).getDecl id).userName, ← id.getType)
-| sort l =>
+| .sort l =>
   return (`Sort, .sort (l.succ))
-| const name us =>
+| .const name us =>
   return (name, (← getConstInfo name).instantiateTypeLevelParams us)
-| lit l =>
+| .lit l =>
   let name : Name := match l with
   | .natVal n => .num .anonymous n
   | .strVal s => .str .anonymous s!"\"{s}\""
@@ -157,3 +155,45 @@ def widthIndentColumnRange : TermElabM (Nat × Nat × Nat × Lsp.Range) := do
   let width := TryThis.getInputWidth (← getOptions)
   let (indent, column) := TryThis.getIndentAndColumn fileMap stxRange
   pure (width, indent, column, range)
+
+/-- Replacements for certain `@[simp]` theorems with alternative encodings. -/
+def SIMP_HARD_CODE : HashMap Name (Array Name) := .ofList [
+  (`Nat.succ_eq_add_one, #[``Nat.succ.injEq]),
+  (`Nat.add_zero, #[``Nat.add_zero, ``Nat.add_succ, ``Nat.succ_add, ``Nat.add_assoc]),
+  (`Nat.mul_one, #[``Nat.mul_succ]),
+  (`Nat.one_mul, #[``Nat.succ_mul, ``Nat.mul_assoc]),
+  (`Nat.one_pow, #[``Nat.pow_succ, ``Nat.pow_add, ``Nat.mul_pow]),
+  (`Nat.pow_one, #[])
+]
+
+/-- Retrieve the `Origin`s in `trie` consisting only of constants in `constSet`.  -/
+partial def getOrigins (constSet : NameSet) (trie : Trie SimpTheorem) : Array Origin :=
+  match trie with
+  | node vs children =>
+    let filtered := children.filter fun child =>
+      match child.1 with
+      | .proj name _ _ | .const name _ => constSet.contains name
+      | .arrow => false
+      | _ => true
+    (vs.filterMap (fun x => if x.priority ≥ eval_prio default then some x.origin else none)) ++ filtered.flatMap (fun x => getOrigins constSet x.2)
+
+/-- Obtain the `@[simp]` theorems that only use constants in `constSet` on the `lhs`. -/
+def getRelevantSimpTheorems (constSet : NameSet) : MetaM (Array Name) := do
+  let thms ← getSimpTheorems
+  let tries ← constSet.toArray.filterMapM fun x => do
+    -- TODO consider using something other than `typeArity1`.
+    pure (thms.post.root.find? (.const x (← typeArity1 (← getConstInfo x).type)))
+  let origins := tries.flatMap (getOrigins constSet)
+  let names := origins.filterMap fun x =>
+    if let .decl name _ _ := x then some name else none
+  let relevant ← names.filterM fun x => do
+    forallTelescopeReducing (← getConstInfo x).type fun xs body => do
+      if !xs.all (fun x => body.containsFVar x.fvarId!) then pure false else
+      if let some (typ, lhs, _) := (eq? body) then do
+        if !typ.isSort then
+          (lhs.getUsedConstantsAsSet.filter (!constSet.contains ·)).foldlM (fun acc name => do
+            pure (acc && (← getUnfoldableConst? name).isSome)
+          ) true
+        else pure false
+      else pure false
+  pure (relevant.flatMap fun x => SIMP_HARD_CODE.getD x #[x])
