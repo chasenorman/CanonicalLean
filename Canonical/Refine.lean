@@ -6,9 +6,9 @@ public import Canonical.Util
 
 namespace Canonical
 
-public section
+public meta section
 
-open Lean Elab Meta Tactic
+open Lean Elab Meta Tactic Server RequestM
 
 /-- Data shared between the tactic process and RPC process. -/
 structure RpcData where
@@ -30,12 +30,11 @@ structure InsertParams where
 deriving Server.RpcEncodable
 
 /-- Obtains the current term from the refinement UI. -/
-@[never_extract, extern "get_refinement"] meta opaque getRefinement : IO Term
+@[never_extract, extern "get_refinement"] opaque getRefinement : IO Term
 
-open Server RequestM in
 /-- Gets the String to be inserted into the document, for the refinement widget. -/
 @[server_rpc_method]
-meta def getRefinementStr (params : InsertParams) : RequestM (RequestTask String) :=
+def getRefinementStr (params : InsertParams) : RequestM (RequestTask String) :=
   withWaitFindSnapAtPos params.pos fun snap => do runTermElabM snap do
     let data := params.rpcData.val
     withMCtx data.mctx do withArityUnfold data.config.monomorphize do withOptions applyOptions do
