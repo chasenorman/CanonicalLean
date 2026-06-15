@@ -64,7 +64,7 @@ def preprocess (goal : MVarId) (config : Config) (structs : Array Name) : MetaM 
 /-- Run Canonical asynchronously, so that we can check for cancellation. -/
 def runCanonical (typ : Typ) (name : String) (timeout : UInt64) (config : Config) : MetaM CanonicalResult := do
   checkInterrupted
-  let task ← IO.asTask (prio := .dedicated) (canonical typ name timeout config.count)
+  let task ← IO.asTask (prio := .dedicated) (canonical typ name timeout config.count.toUSize)
   while !(← IO.hasFinished task) do
     if ← interrupted then
       cancel

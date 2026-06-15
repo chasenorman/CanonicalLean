@@ -1,6 +1,7 @@
 module
 
 import Lean.Meta
+import Lean.Elab.ConfigEval
 public import Lean.Elab.Tactic.Basic
 open Lean Expr Std Meta
 

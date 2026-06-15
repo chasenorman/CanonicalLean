@@ -76,7 +76,7 @@ instance : ToString Rule where toString := ruleToString
 
 structure Config where
   /-- Canonical produces `count` proofs. -/
-  count: USize := 1
+  count: Nat := 1
   /-- Provide `(A → B) : Sort` as an axiom to Canonical. -/
   pi: Bool := false
   /-- Print the inhabitation problem sent to Canonical. -/
