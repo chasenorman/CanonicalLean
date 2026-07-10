@@ -197,16 +197,16 @@ partial def destruct (t : Expr) : MetaM (Option Isomorphism) := do
 end
 
 #eval show MetaM Unit from (do
-  let f ← withLocalDeclD `x (Expr.const `Nat []) fun fvar => do
-    mkLambdaFVars #[fvar] $ mkAppN (Expr.const `Option.some [0]) #[Expr.const `Nat [], fvar]
-  let t ← inferType f -- (toExpr (Option.none : Option (Nat × Nat)))
+  -- let f ← withLocalDeclD `x (Expr.const `Nat []) fun fvar => do
+  --   mkLambdaFVars #[fvar] $ mkAppN (Expr.const `Option.some [0]) #[Expr.const `Nat [], fvar]
+  let t ← inferType (toExpr (Option.none : Option (Nat × Nat)))
   let iso := (← destruct t).get!
   for constructor in iso.constructors do
-    IO.println $ ← betaReduce constructor
+    IO.println $ ← ppExpr constructor
   IO.println ""
   -- IO.println $ iso.recursor
   -- IO.println ""
-  IO.println $ ← betaReduce iso.recursor
+  IO.println $ ← ppExpr iso.recursor
   -- IO.println ""
   -- IO.println $ ← check (← betaReduce iso.recursor)
   )
