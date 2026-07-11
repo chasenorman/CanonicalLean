@@ -121,7 +121,6 @@ partial def destructInduct (t : Expr) (builtinCtors : Array Expr) (builtinRec : 
         let builtinArgs := destructedArgs.mapIdx fun k args => mkAppN ctors[k]! args
         mkLambdaFVars destructedArgs.flatten $ mkAppN builtinCtor builtinArgs
   let constructors := constructorCases.flatten
-  -- Perhaps we can pass the motiveLevel down to further recursive calls?
   let motiveLevel ← Meta.mkFreshLevelMVar
   let recursor ←
     withLocalDeclD `X (Expr.sort motiveLevel) fun fvarX => do

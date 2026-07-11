@@ -1,6 +1,7 @@
 module
 
 import Lean
+public import Canonical.Util
 public import Canonical.Destruct.Util
 open Lean Core Meta
 
@@ -9,45 +10,15 @@ open Lean Core Meta
 
 public section
 
-inductive DestructInfo where
-  | trivial
-  | induct (builtinCtors : Array Expr) (builtinRec : Level → Expr)
-  | pi (inputTypes : Array Expr) (outputType : Expr)
-  deriving Inhabited
-
 structure Isomorphism where
   t : Expr
   constructors : Array Expr
   recursor : Expr
-
-def extractInfo (t : Expr) : MetaM (Option DestructInfo) := do
-  if !(← inferType t).isSort then return .none
-  let t' ← whnf t
-  match t' with
-  | .const _ _
-  | .app _ _ => do
-    let headName := t'.getAppFn.constName!
-    let headLevels := t'.getAppFn.constLevels!
-    let headArgs := t'.getAppArgs
-    if !(← isInductive headName) then return .none
-    let inductInfo ← getConstInfoInduct headName
-    if inductInfo.isRec || inductInfo.isReflexive then
-      return .some $ DestructInfo.trivial
-    let ctorNames := inductInfo.ctors.toArray
-    let recName := headName ++ `rec
-    return DestructInfo.induct
-      (ctorNames.map fun name => mkAppN (Expr.const name headLevels) headArgs)
-      (fun motiveLevel => mkAppN (Expr.const recName (motiveLevel::headLevels)) headArgs)
-  | .forallE _ _ _ _ =>
-    forallTelescope t fun inputVars outputType => do
-      let inputTypes ← inputVars.mapM inferType
-      return .some $ DestructInfo.pi inputTypes outputType
-  | _ =>
-    return .some DestructInfo.trivial
+  deriving Inhabited
 
 def destructTrivial (t : Expr) : MetaM (Option Isomorphism) := do
   let ctor := Expr.lam `x t (Expr.bvar 0) .default
-  let recursor ← withRecursor t #[ctor] fun _X ctors input => do
+  let recursor ← withRecursor t #[ctor] fun _ X ctors input => do
     return Expr.app ctors[0]! input
   return .some {
     t := t,
@@ -56,8 +27,35 @@ def destructTrivial (t : Expr) : MetaM (Option Isomorphism) := do
   }
 
 mutual
+partial def destructCtor (t : Expr) (ctor : Expr) : MetaM (Option (Array Isomorphism)) := do
+  let optIsos ← constructorTelescope (← inferType ctor) t fun fvars => do
+    fvars.mapM fun input => do destruct (← inferType input)
+  return optIsos.mapM id
+
+
 partial def destructInduct (t : Expr) (builtinCtors : Array Expr) (builtinRec : Level → Expr) : MetaM (Option Isomorphism) := do
-  return .none
+  let .some isoBlocks := (← builtinCtors.mapM (destructCtor t ·)).mapM id | return .none
+  let ctorBlocks ← builtinCtors.mapIdxM fun i builtinCtor => do
+    let allCtors := isoBlocks[i]!.map (·.constructors)
+    let isoTypes := isoBlocks[i]!.map (·.t)
+    withCartesianProductM allCtors fun ctorChoices => do
+      let ctorTypes ← ctorChoices.mapM inferType
+      let factorSizes := (isoTypes.zip ctorTypes).map fun (isoType, ctorType) => constructorArity ctorType isoType
+      constructorTelescopeN ctorTypes isoTypes fun allInputs => do
+        let packedInputs := repackage allInputs factorSizes
+        let builtinArgs := (ctorChoices.zip packedInputs).map fun (ctor, inputs) =>
+          Canonical.apply ctor inputs.toList
+        mkLambdaFVars allInputs (mkAppN builtinCtor builtinArgs)
+  let constructors := ctorBlocks.flatten
+  let recursor ← withRecursor t constructors fun level X ctors input => do
+    let builtinMotive := Expr.lam `_ t X .default
+    let recBranches := #[] -- TODO
+    return mkAppN (builtinRec level) (#[builtinMotive] ++ recBranches ++ #[input])
+  return .some {
+    t := t,
+    constructors := constructors,
+    recursor := recursor
+  }
 
 partial def destructPi (t : Expr) (inputTypes : Array Expr) (outputType : Expr) : MetaM (Option Isomorphism) := do
   return .none
@@ -75,5 +73,11 @@ partial def destruct (t : Expr) : MetaM (Option Isomorphism) := do
     destructInduct t builtinCtors builtinRec
   | .pi inputTypes outputType => destructPi t inputTypes outputType
 end
+
+#eval (do
+  let e := toExpr ((Option.none, Option.none, Option.none, Option.none) : Option Nat × Option Nat × Option Nat × Option Nat)
+  let t ← inferType e
+  IO.println $ ← (← destruct t).get!.constructors.mapM ppExpr
+  )
 
 end
