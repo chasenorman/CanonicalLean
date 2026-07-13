@@ -124,4 +124,10 @@ def repackage (data : Array α) (sizes : Array Nat) : Array (Array α) :=
   (sizes.foldl (fun (packed, remaining) size =>
     (packed.push (remaining.take size), remaining.drop size))
     (#[], data)).fst
+
+/-- Fully β-reduces subexpressions of `e`. -/
+def recursiveBetaReduce (e : Expr) : MetaM Expr := do
+  Meta.transform e (post := fun subexpr => do
+    return TransformStep.done subexpr.headBeta
+  )
 end

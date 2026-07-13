@@ -27,12 +27,10 @@ partial def withRecurseOn (X : Expr) (values : Array Expr) (isos : Array Isomorp
         mkLambdaFVars newVars (← loop (valueIdx + 1) (ctorIndices.push ctorIdx) (vars ++ newVars))
     let args := #[X] ++ cases ++ #[values[valueIdx]!]
     let result := Canonical.apply isos[valueIdx]!.recursor args.toList
-    -- TODO: currently this doesn't fully beta reduce as we have recursors of
-    -- the form (fun X f x => f x), which do not beta reduce immediately upon
-    -- subsitution. Using headBeta or whnf here does not suffice as there seems
-    -- to be more complicated situations of this type. It's likely going to take
-    -- a lot of hand tracing to see exactly what's going on here
-    pure result
+    -- A recursive beta reduction is needed since we substitute lambdas into the
+    -- recursors, and moreover, these lambdas may very well not be at the head
+    -- of the expression.
+    recursiveBetaReduce result
   loop 0 #[] #[]
 
 def destructTrivial (t : Expr) : MetaM (Option Isomorphism) := do
@@ -100,7 +98,7 @@ partial def destruct (t : Expr) : MetaM (Option Isomorphism) := do
 end
 
 #eval (do
-  let e := toExpr ((Option.none, Option.some 3) : Option (Option (Nat × Nat)) × Option Nat)
+  let e := toExpr ((.none, .none) : Option (Option Nat × Nat) × Option Nat)
   let t ← inferType e
   let iso := (← destruct t).get!
   IO.println $ ← iso.constructors.mapM ppExpr
