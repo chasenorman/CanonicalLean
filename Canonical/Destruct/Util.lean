@@ -57,9 +57,6 @@ def constructorTelescopeN (types : Array Expr) (outputTypes : Array Expr) (k : A
   ((types.zip outputTypes).foldl (fun k' (type, outputType) =>
     fun restVars => constructorTelescope type outputType fun newVars => k' (restVars ++ newVars))
     k) #[]
-  -- (types.foldr (fun type k' =>
-  --   fun restVars => constructorTelescope type outputType fun newVars => k' (newVars ++ restVars))
-  --   k) #[]
 
 /-- Takes a constructor `ctor` for `outputType` (i.e. a function with output type `outputType`)
     and a type `X` and returns the type of `ctor`, except the output type is
@@ -80,7 +77,7 @@ def recursify (ctor : Expr) (X : Expr) (outputType : Expr) : MetaM Expr := do
     variables for a recursor type with level, constructors, and input, and then output a
     recursor of the correct type with body determined by executing `k` on these
     free variables. -/
-def withRecursor (t : Expr) (ctors : Array Expr) (k : Level → Expr → Array Expr → Expr → MetaM Expr) : MetaM Expr := do
+def mkRecursor (t : Expr) (ctors : Array Expr) (k : Level → Expr → Array Expr → Expr → MetaM Expr) : MetaM Expr := do
   let level ← mkFreshLevelMVar
   withLocalDeclD `X (Expr.sort level) fun fvarX => do
     let ctorInfo ← ctors.mapIdxM fun i ctor => do
@@ -92,17 +89,25 @@ def withRecursor (t : Expr) (ctors : Array Expr) (k : Level → Expr → Array E
 #eval show MetaM Unit from (do
   let ctor := (Expr.lam `f (Expr.forallE `_ (Expr.const `Nat []) (Expr.const `Nat []) .default) (Expr.bvar 0) .default)
   let t := (Expr.forallE `_ (Expr.const `Nat []) (Expr.const `Nat []) .default)
-  let e ← withRecursor t #[ctor] fun _ X ctors input => do
+  let e ← mkRecursor t #[ctor] fun _ X ctors input => do
     return Expr.app ctors[0]! input
   IO.println $ ← ppExpr e
   )
 
+/-- Returns a single index into an array of length `sizes.prod` based on
+    `indices`, which effectively indexes into a Cartesian product. This function is
+    the inverse of `decodeIndex`. -/
 def encodeIndices (sizes : Array Nat) (indices : Array Nat) : Nat :=
   (sizes.zip indices).foldl (fun idx (size, i) => idx * size + i) 0
 
+/-- Given an index into an array of length `sizes.prod`, returns an array of
+    indices based on `i` that effectively index into a Cartesian product. This
+    function is the inverse of `encodeIndices` -/
 def decodeIndex (sizes : Array Nat) (i : Nat) : Array Nat :=
   (sizes.foldr (fun size (acc, idx) => (#[idx % size] ++ acc, idx / size)) (#[], i)).fst
 
+/-- Executes `k` for each possible tuple of the form `(x_0, x_1, ..., x_n)`,
+    where `x_i` is an element from `cases[i]!` -/
 def withCartesianProductM [Inhabited α] [Monad n] (cases : Array (Array α)) (k : Array α → n β) : n (Array β) := do
   let sizes := cases.map (·.size)
   let totalSize := sizes.prod
@@ -113,6 +118,8 @@ def withCartesianProductM [Inhabited α] [Monad n] (cases : Array (Array α)) (k
     result := result.push (← k values)
   return result
 
+/-- Takes an array `data` of total length equal to the sum of `sizes` and
+    partitions it into blocks according to `sizes`. -/
 def repackage (data : Array α) (sizes : Array Nat) : Array (Array α) :=
   (sizes.foldl (fun (packed, remaining) size =>
     (packed.push (remaining.take size), remaining.drop size))
