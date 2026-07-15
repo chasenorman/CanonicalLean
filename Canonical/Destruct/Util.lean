@@ -8,7 +8,7 @@ public section
 inductive DestructInfo where
   | trivial
   | induct (builtinCtors : Array Expr) (builtinRec : Level → Expr)
-  | pi (inputTypes : Array Expr) (outputType : Expr)
+  | pi (inputType : Expr) (outputType : Expr)
   deriving Inhabited
 
 def extractInfo (t : Expr) : MetaM (Option DestructInfo) := do
@@ -31,10 +31,8 @@ def extractInfo (t : Expr) : MetaM (Option DestructInfo) := do
     return DestructInfo.induct
       (ctorNames.map fun name => mkAppN (Expr.const name headLevels) headArgs)
       (fun motiveLevel => mkAppN (Expr.const recName (motiveLevel::headLevels)) headArgs)
-  | .forallE _ _ _ _ =>
-    forallTelescope t fun inputVars outputType => do
-      let inputTypes ← inputVars.mapM inferType
-      return .some $ DestructInfo.pi inputTypes outputType
+  | .forallE _ inputType outputType _ =>
+    return .some $ DestructInfo.pi inputType outputType
   | _ =>
     return .some DestructInfo.trivial
 
@@ -130,4 +128,8 @@ def recursiveBetaReduce (e : Expr) : MetaM Expr := do
   Meta.transform e (post := fun subexpr => do
     return TransformStep.done subexpr.headBeta
   )
+
+def withLocalDeclsDND' [Inhabited α] (types : Array Expr) (k : Array Expr → MetaM α) : MetaM α :=
+  withLocalDeclsDND (types.mapIdx fun i type => (Name.mkSimple s!"f_{i}", type)) k
+
 end

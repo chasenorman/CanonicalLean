@@ -33,6 +33,18 @@ partial def withRecurseOn (X : Expr) (values : Array Expr) (isos : Array Isomorp
     recursiveBetaReduce result
   loop 0 #[] #[]
 
+/-
+Example of above:
+fun (X : Sort u)
+    (f_0 : X)
+    (f_1 : Nat -> X)
+    (x : Option Nat) =>
+      Option.rec Nat (fun (_ : Option.{0} Nat) => X)
+      f_0
+      (fun (val : Nat) => f_1 val)
+      x
+-/
+
 def destructTrivial (t : Expr) : MetaM (Option Isomorphism) := do
   let ctor := Expr.lam `x t (Expr.bvar 0) .default
   let recursor ← mkRecursor t #[ctor] fun _ _ ctors input => do
@@ -80,8 +92,35 @@ partial def destructInduct (t : Expr) (builtinCtors : Array Expr) (builtinRec : 
     recursor := recursor
   }
 
-partial def destructPi (t : Expr) (inputTypes : Array Expr) (outputType : Expr) : MetaM (Option Isomorphism) := do
-  return .none
+-- Will likely see some refactoring
+-- Perhaps would be cool to move the input arguments to the end, but this is
+-- also maybe counterintuitive
+partial def destructPi (t : Expr) (inputType : Expr) (outputType : Expr) : MetaM (Option Isomorphism) := do
+  let .some inputIso ← destruct inputType | return .none
+  let .some outputIso ← destruct outputType | return .none
+  let constituentTypes ← inputIso.constructors.mapM fun inputCtor => do
+    constructorTelescope (← inferType inputCtor) inputType fun inputs => do
+      withLocalDeclD `Y (Expr.sort (← mkFreshLevelMVar)) fun Y => do
+        let recursified ← outputIso.constructors.mapM (recursify · Y outputType)
+        withLocalDeclsDND' recursified fun outputs => do
+          mkForallFVars (inputs ++ #[Y] ++ outputs) Y
+  let constructor ← withLocalDeclsDND' constituentTypes fun constituents => do
+    let resultLambda ← withLocalDeclD `x inputType fun input => do
+      let caseArgs ← (inputIso.constructors.zip constituents).mapM fun (inputCtor, constituent) => do
+        constructorTelescope (← inferType inputCtor) inputType fun inputs => do
+          mkLambdaFVars inputs $ mkAppN constituent (inputs ++ #[outputType] ++ outputIso.constructors)
+      -- See withRecurseOn for more on why we have to call recursiveBetaReduce
+      let resultBody ← recursiveBetaReduce $ Canonical.apply inputIso.recursor (#[outputType] ++ caseArgs ++ #[input]).toList
+      mkLambdaFVars #[input] resultBody
+    mkLambdaFVars constituents resultLambda
+  let recursor ← mkRecursor t #[constructor] fun _ X ctors input => do
+    let ctor := ctors[0]!
+    pure Inhabited.default
+  return .some {
+    t := t,
+    constructors := #[constructor],
+    recursor := recursor
+  }
 
 partial def destruct (t : Expr) : MetaM (Option Isomorphism) := do
   if !(← inferType t).isSort then return .none
@@ -96,6 +135,14 @@ partial def destruct (t : Expr) : MetaM (Option Isomorphism) := do
     destructInduct t builtinCtors builtinRec
   | .pi inputTypes outputType => destructPi t inputTypes outputType
 end
+
+#eval (do
+  let e := (Expr.lam `x (Expr.const `Bool []) (mkAppN (Expr.const `Option.some [0]) #[(Expr.const `Bool []), (Expr.bvar 0)]) .default)
+  let t ← inferType e
+  let iso := (← destruct t).get!
+  IO.println $ ← ppExpr iso.constructors[0]!
+  IO.println $ ← check iso.constructors[0]!
+  )
 
 #eval (do
   let e := toExpr ((.none, .none) : Option (Option Nat × Nat) × Option Nat)
