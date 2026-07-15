@@ -1,185 +1,136 @@
 module
 
 import Lean
-
+public import Canonical.Util
+public import Canonical.Destruct.Util
 open Lean Core Meta
 
+-- Potentially
+-- abbrev DestructM := ReaderT (TreeMap Name Isomorphism) MetaM
+
+public section
+
 structure Isomorphism where
+  t : Expr
   constructors : Array Expr
   recursor : Expr
-  deriving Inhabited, Repr
-
--- Definitely need some better abstractions. One way that we instantiate
--- the variables in order to construct something is to use forallTelescope on
--- the constructors, but this actually does not work well for pi types (this
--- will create a variable for the input too).
-
-def forallTelescopeN
-  (types : List Expr)
-  (k : List (Array Expr) → List Expr → MetaM α) :
-  MetaM α :=
-    match types with
-    | [] => k [] []
-    | t::types' => forallTelescope t fun inputFVars outputType =>
-      forallTelescopeN types' fun inputs outputs => k (inputFVars::inputs) (outputType::outputs)
-
--- Like regular withLocalDecls but one can package together the free
--- variables and dependencies between arguments are removed for simplicity
-def withLocalDeclsDN [Inhabited α] (typeBlocks : List (Array Expr)) (k : List (Array Expr) → MetaM α) : MetaM α :=
-  match typeBlocks with
-  | [] => k []
-  | types::typeBlocks' => do
-    withLocalDeclsD
-      (← types.mapM fun t => do pure (← mkFreshId, fun _ => pure t)) fun fvars => do
-      withLocalDeclsDN typeBlocks' fun fvarsBlocks => k (fvars::fvarsBlocks)
-
-def recursify (forallType : Expr) (newOutputType : Expr) : MetaM Expr := do
-  forallTelescope forallType fun fvars _ =>
-    mkForallFVars fvars newOutputType
-
-inductive DestructInfo where
-  | trivial
-  | induct (builtinCtors : Array Expr) (builtinRec : Level → Expr)
-  | pi (inputTypes : Array Expr) (outputType : Expr)
   deriving Inhabited
 
-def extractInfo (t : Expr) : MetaM (Option DestructInfo) := do
-  if !(← inferType t).isSort then return .none
-  let t' ← whnf t
-  match t' with
-  | .const _ _
-  | .app _ _ => do
-    let headName := t'.getAppFn.constName!
-    let headLevels := t'.getAppFn.constLevels!
-    let headArgs := t'.getAppArgs
-    if !(← isInductive headName) then return .none
-    let inductInfo ← getConstInfoInduct headName
-    if inductInfo.isRec || inductInfo.isReflexive then
-      return .some $ DestructInfo.trivial
-    let ctorNames := inductInfo.ctors.toArray
-    let recName := headName ++ `rec
-    return DestructInfo.induct
-      (ctorNames.map fun name => mkAppN (Expr.const name headLevels) headArgs)
-      (fun motiveLevel => mkAppN (Expr.const recName (motiveLevel::headLevels)) headArgs)
-  | .forallE _ _ _ _ =>
-    forallTelescope t fun inputVars outputType => do
-      let inputTypes ← inputVars.mapM inferType
-      return .some $ DestructInfo.pi inputTypes outputType
-  | _ =>
-    return .some DestructInfo.trivial
+/-- Returns an expression of nested recursor calls that recurse on `values` in
+    sequence, executing `k` on all possible branching cases. -/
+partial def withRecurseOn (X : Expr) (values : Array Expr) (isos : Array Isomorphism) (k : Array Nat → Array Expr → MetaM Expr) : MetaM Expr := do
+  let rec loop (valueIdx : Nat) (ctorIndices : Array Nat) (vars : Array Expr) : MetaM Expr := do
+    if valueIdx == values.size then
+      return ← k ctorIndices vars
+    let cases ← isos[valueIdx]!.constructors.mapIdxM fun ctorIdx ctor => do
+      constructorTelescope (← inferType ctor) isos[valueIdx]!.t fun newVars => do
+        mkLambdaFVars newVars (← loop (valueIdx + 1) (ctorIndices.push ctorIdx) (vars ++ newVars))
+    let args := #[X] ++ cases ++ #[values[valueIdx]!]
+    let result := Canonical.apply isos[valueIdx]!.recursor args.toList
+    -- A recursive beta reduction is needed since we substitute lambdas into the
+    -- recursors, and moreover, these lambdas may very well not be at the head
+    -- of the expression. A potential idea to fix this might be to have some of
+    -- the recursor arguments eta-reduced
+    recursiveBetaReduce result
+  loop 0 #[] #[]
 
-def withDNFProductM [Monad n] (factors : Array Isomorphism) (k : Array Expr → n α) : n (Array α) := do
-  let dnfSize := (factors.map (·.constructors.size)).prod
-  let mut combinations : Array α := Array.emptyWithCapacity dnfSize
-  for i in [:dnfSize] do
-    let mut indices := Array.emptyWithCapacity factors.size
-    let mut j := i
-    for k in [:factors.size] do
-      indices := indices.push (j % factors[k]!.constructors.size)
-      j := j / factors[k]!.constructors.size
-    combinations := combinations.push
-      (← k (indices.mapIdx fun k idx => factors[k]!.constructors[idx]!))
-  return combinations
-
-partial def mkProductRecursor (X : Expr) (isos : Array Isomorphism) (fields : Array Expr) (ctors : Array Expr) (k : Expr → Array Expr → MetaM Expr) : MetaM Expr := do
-  let rec loop (level : Nat) (ctorIdx : Nat) (vars : Array Expr) : MetaM Expr := do
-    if level == isos.size then return ← k ctors[ctorIdx]! vars
-    let idxStep := isos[level]!.constructors.size
-    let recHead := Expr.app isos[level]!.recursor X
-    let recCases ← isos[level]!.constructors.mapIdxM fun i ctor => do
-      forallTelescope (← inferType ctor) fun inputVars _ => do
-        mkLambdaFVars inputVars $ ← loop (level + 1) (idxStep * ctorIdx + i) (vars ++ inputVars)
-    return mkAppN recHead (recCases ++ #[fields[level]!])
-  loop 0 0 #[]
+/-
+Example of above:
+fun (X : Sort u)
+    (f_0 : X)
+    (f_1 : Nat -> X)
+    (x : Option Nat) =>
+      Option.rec Nat (fun (_ : Option.{0} Nat) => X)
+      f_0
+      (fun (val : Nat) => f_1 val)
+      x
+-/
 
 def destructTrivial (t : Expr) : MetaM (Option Isomorphism) := do
-  let ctor :=
-    Expr.lam `x t (Expr.bvar 0) .default
-  let recursor ←
-    withLocalDeclD `X (Expr.sort (← Meta.mkFreshLevelMVar)) fun fvarX => do
-      withLocalDeclD `f (Expr.forallE .anonymous t fvarX .default) fun fvarF => do
-        withLocalDeclD `x t fun fvarInput => do
-          return ← mkLambdaFVars #[fvarX, fvarF, fvarInput] (Expr.app fvarF fvarInput)
+  let ctor := Expr.lam `x t (Expr.bvar 0) .default
+  let recursor ← mkRecursor t #[ctor] fun _ _ ctors input => do
+    return Expr.app ctors[0]! input
   return .some {
+    t := t,
     constructors := #[ctor],
     recursor := recursor
   }
 
 mutual
+partial def destructCtor (t : Expr) (ctor : Expr) : MetaM (Option (Array Isomorphism)) := do
+  let optIsos ← constructorTelescope (← inferType ctor) t fun fvars => do
+    fvars.mapM fun input => do destruct (← inferType input)
+  return optIsos.mapM id
+
 partial def destructInduct (t : Expr) (builtinCtors : Array Expr) (builtinRec : Level → Expr) : MetaM (Option Isomorphism) := do
-  let isomorphisms : Option (Array (Array Isomorphism)) := Array.mapM (f := id)
-    (← builtinCtors.mapM fun builtinCtor => do
-      forallTelescope (← inferType builtinCtor) fun inputVars _ => do
-        return (← inputVars.mapM fun var => do destruct (← inferType var)).mapM id)
-  if isomorphisms.isNone then return .none
-  let isomorphisms := isomorphisms.get!
-  let constructorCases : Array (Array Expr) ← isomorphisms.mapIdxM fun i isos => do
-    let builtinCtor := builtinCtors[i]!
-    withDNFProductM isos fun ctors => do
-      forallTelescopeN (← ctors.mapM inferType).toList fun destructedArgs _ => do
-        let destructedArgs := destructedArgs.toArray
-        let builtinArgs := destructedArgs.mapIdx fun k args => mkAppN ctors[k]! args
-        mkLambdaFVars destructedArgs.flatten $ mkAppN builtinCtor builtinArgs
-  let constructors := constructorCases.flatten
-  let motiveLevel ← Meta.mkFreshLevelMVar
-  let recursor ←
-    withLocalDeclD `X (Expr.sort motiveLevel) fun fvarX => do
-      let constructorTypes ← constructorCases.mapM (·.mapM fun ctor => do recursify (← inferType ctor) fvarX)
-      withLocalDeclsDN constructorTypes.toList fun fvarCtorBlocks => do
-        let fvarCtorBlocks := fvarCtorBlocks.toArray
-        withLocalDecl `x .default t fun fvarInput => do
-          let recHead := Expr.app (builtinRec motiveLevel) (Expr.lam `_ t fvarX .default)
-          let recCases ← isomorphisms.mapIdxM fun i isos => do
-            forallTelescope (← inferType builtinCtors[i]!) fun inputVars _ => do
-              mkLambdaFVars inputVars $ ← mkProductRecursor fvarX isos inputVars fvarCtorBlocks[i]! (fun ctor vars => pure $ mkAppN ctor vars)
-          mkLambdaFVars
-            (#[fvarX] ++ fvarCtorBlocks.flatten ++ #[fvarInput])
-            (mkAppN recHead (recCases ++ #[fvarInput]))
+  let .some isoBlocks := (← builtinCtors.mapM (destructCtor t ·)).mapM id | return .none
+  let ctorBlocks ← builtinCtors.mapIdxM fun i builtinCtor => do
+    let allCtors := isoBlocks[i]!.map (·.constructors)
+    let isoTypes := isoBlocks[i]!.map (·.t)
+    withCartesianProductM allCtors fun ctorChoices => do
+      let ctorTypes ← ctorChoices.mapM inferType
+      let factorSizes := (isoTypes.zip ctorTypes).map fun (isoType, ctorType) => constructorArity ctorType isoType
+      constructorTelescopeN ctorTypes isoTypes fun allInputs => do
+        let packedInputs := repackage allInputs factorSizes
+        let builtinArgs := (ctorChoices.zip packedInputs).map fun (ctor, inputs) =>
+          Canonical.apply ctor inputs.toList
+        mkLambdaFVars allInputs (mkAppN builtinCtor builtinArgs)
+  let constructors := ctorBlocks.flatten
+  let recursor ← mkRecursor t constructors fun level X ctors input => do
+    let builtinMotive := Expr.lam `_ t X .default
+    let blockSizes := isoBlocks.map fun block => (block.map (·.constructors.size)).prod
+    let ctorsBlocks := repackage ctors blockSizes
+    let recBranches ← builtinCtors.mapIdxM fun caseIdx builtinCtor => do
+      let choiceSizes := isoBlocks[caseIdx]!.map (·.constructors.size)
+      constructorTelescope (← inferType builtinCtor) t fun values => do
+        mkLambdaFVars values $ ← withRecurseOn X values isoBlocks[caseIdx]! fun indices vars => do
+          let encodedIdx := encodeIndices choiceSizes indices
+          return mkAppN ctorsBlocks[caseIdx]![encodedIdx]! vars
+    return mkAppN (builtinRec level) (#[builtinMotive] ++ recBranches ++ #[input])
   return .some {
+    t := t,
     constructors := constructors,
     recursor := recursor
   }
 
-partial def destructPi (t : Expr) (inputTypes : Array Expr) (outputType : Expr) : MetaM (Option Isomorphism) := do
-  let inputIsos := (← inputTypes.mapM destruct).mapM id
-  if inputIsos.isNone then return .none
-  let inputIsos := inputIsos.get!
-  let outputIso ← destruct outputType
-  if outputIso.isNone then return .none
-  let outputIso := outputIso.get!
-  let (constructorTypes, repackages) := Array.unzip $ ← withDNFProductM inputIsos fun ctors => do
-    forallTelescopeN (← ctors.mapM inferType).toList fun inputBlocks _ => do
-      let inputBlocks := inputBlocks.toArray
-      let repackage : Array Expr → MetaM (Array Expr) := fun allVars => do
-        let mut rest := allVars
-        let mut result : Array Expr := #[]
-        for i in [:inputBlocks.size] do
-          let blockSize := inputBlocks[i]!.size
-          let block := rest.take blockSize
-          rest := rest.drop blockSize
-          result := result.push (mkAppN ctors[i]! block)
-        return result
-      let allVars := inputBlocks.flatten
-      withLocalDeclD `Y (Expr.sort (← Meta.mkFreshLevelMVar)) fun fvarY => do
-        let recCtorTypes ← outputIso.constructors.mapM fun ctor => do recursify (← inferType ctor) fvarY
-        let declsInfo := recCtorTypes.map fun type => (Name.anonymous, fun _ => pure type)
-        withLocalDeclsD declsInfo fun fvarCtors => do
-          return (← mkForallFVars (allVars ++ #[fvarY] ++ fvarCtors) fvarY, repackage)
-  let constructorInfos := constructorTypes.mapIdx fun i type => (Name.mkSimple s!"f_{i}", fun _ => pure type)
-  let constructor ←
-    withLocalDeclsD constructorInfos fun fvarInputCtors => do
-      forallTelescope t fun fvarInputs _ => do
-        mkLambdaFVars (fvarInputCtors ++ fvarInputs) $ ← mkProductRecursor outputType inputIsos fvarInputs fvarInputCtors fun ctor vars => do
-          return mkAppN ctor (vars ++ #[outputType] ++ outputIso.constructors)
-  -- let recursor ←
-  --   withLocalDeclD `X (Expr.sort (← Meta.mkFreshLevelMVar)) fun fvarX => do
-  --     withLocalDeclD `f (← recursify (← inferType constructor) fvarX) fun fvarF => do
-  --       withLocalDeclD `x t fun fvarInput => do
+-- Will likely see some refactoring
+-- Perhaps would be cool to move the input arguments to the end, but this is
+-- also maybe counterintuitive
+partial def destructPi (t : Expr) (inputType : Expr) (outputType : Expr) : MetaM (Option Isomorphism) := do
+  let .some inputIso ← destruct inputType | return .none
+  let .some outputIso ← destruct outputType | return .none
+  let constituentTypes ← inputIso.constructors.mapM fun inputCtor => do
+    constructorTelescope (← inferType inputCtor) inputType fun inputs => do
+      withLocalDeclD `Y (Expr.sort (← mkFreshLevelMVar)) fun Y => do
+        let recursified ← outputIso.constructors.mapM (recursify · Y outputType)
+        withLocalDeclsDND' recursified fun outputs => do
+          mkForallFVars (inputs ++ #[Y] ++ outputs) Y
+  let constructor ← withLocalDeclsDND' constituentTypes fun constituents => do
+    let resultLambda ← withLocalDeclD `x inputType fun input => do
+      let caseArgs ← (inputIso.constructors.zip constituents).mapM fun (inputCtor, constituent) => do
+        constructorTelescope (← inferType inputCtor) inputType fun inputs => do
+          mkLambdaFVars inputs $ mkAppN constituent (inputs ++ #[outputType] ++ outputIso.constructors)
+      -- See withRecurseOn for more on why we have to call recursiveBetaReduce
+      let resultBody ← recursiveBetaReduce $ Canonical.apply inputIso.recursor (#[outputType] ++ caseArgs ++ #[input]).toList
+      mkLambdaFVars #[input] resultBody
+    mkLambdaFVars constituents resultLambda
+  let recursor ← mkRecursor t #[constructor] fun _ _ ctors input => do
+    let ctor := ctors[0]!
+    -- We use forallTelescope here because the function types are recursified
+    let projs ← forallTelescope (← inferType ctor) fun inputCases _ => do
+      (inputIso.constructors.zip inputCases).mapM fun (inputCtor, inputCase) => do
+        forallTelescope (← inferType inputCase) fun inputs _ => do
+          let arity := constructorArity (← inferType inputCtor) inputType
+          let ctorInputs := inputs.take arity
+          let rest := inputs.drop arity
+          let recValue := Expr.app input (Canonical.apply inputCtor ctorInputs.toList)
+          mkLambdaFVars inputs $ Canonical.apply outputIso.recursor (rest ++ #[recValue]).toList
+    return mkAppN ctor projs
   return .some {
+    t := t,
     constructors := #[constructor],
-    recursor := Inhabited.default
+    recursor := recursor
   }
-
 
 partial def destruct (t : Expr) : MetaM (Option Isomorphism) := do
   if !(← inferType t).isSort then return .none
@@ -195,22 +146,24 @@ partial def destruct (t : Expr) : MetaM (Option Isomorphism) := do
   | .pi inputTypes outputType => destructPi t inputTypes outputType
 end
 
-#eval show MetaM Unit from (do
-  -- let f ← withLocalDeclD `x (Expr.const `Nat []) fun fvar => do
-  --   mkLambdaFVars #[fvar] $ mkAppN (Expr.const `Option.some [0]) #[Expr.const `Nat [], fvar]
-  let t ← inferType (toExpr (Option.none : Option (Nat × Nat)))
+#eval (do
+  -- let e := (Expr.lam `x (Expr.const `Bool []) (mkAppN (Expr.const `Option.some [0]) #[(Expr.const `Bool []), (Expr.bvar 0)]) .default)
+  let e := (Expr.lam `x (Expr.const `Nat []) (Expr.bvar 0) .default)
+  let t ← inferType e
   let iso := (← destruct t).get!
-  for constructor in iso.constructors do
-    IO.println $ ← ppExpr constructor
-  IO.println ""
-  -- IO.println $ iso.recursor
-  -- IO.println ""
+  IO.println $ ← ppExpr iso.constructors[0]!
+  IO.println $ ← check iso.constructors[0]!
   IO.println $ ← ppExpr iso.recursor
-  -- IO.println ""
-  -- IO.println $ ← check (← betaReduce iso.recursor)
+  IO.println $ ← check iso.recursor
   )
 
-/-
-fun (f_0 : Nat -> (forall (Y : Sort.{?_uniq.17540}), Y -> (Nat -> Y) -> Y))
-    (x : Nat) => (fun (X : Sort.{?_uniq.17517}) (f : Nat -> X) (x : Nat) => f x) (Option.{0} Nat) (fun (x : Nat) => f_0 x (Option.{0} Nat) (Option.none.{0} Nat) (fun (x : Nat) => Option.some.{0} Nat ((fun (x : Nat) => x) x))) x
--/
+#eval (do
+  let e := toExpr ((.none, .none) : Option (Option Nat × Nat) × Option Nat)
+  let t ← inferType e
+  let iso := (← destruct t).get!
+  IO.println $ ← iso.constructors.mapM ppExpr
+  IO.println $ ← ppExpr iso.recursor
+  IO.println $ ← check iso.recursor
+  )
+
+end
