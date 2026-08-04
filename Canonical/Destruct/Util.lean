@@ -1,6 +1,7 @@
 module
 
 public import Lean
+public import Canonical.Util
 open Lean Core Meta
 
 public section
@@ -36,25 +37,39 @@ def extractInfo (t : Expr) : MetaM (Option DestructInfo) := do
   | _ =>
     return .some DestructInfo.trivial
 
-def constructorArity (type : Expr) (outputType : Expr) : Nat :=
-  type.getForallArity - outputType.getForallArity
+def constructorArity (ctor : Expr) (outputType : Expr) : MetaM Nat := do
+  return (← inferType ctor).getForallArity - outputType.getForallArity
 
-/-- Given `type` of the form `forall xs, outputType`, executes `k vs`, where
-    `vs` are free variables for `xs`. Similar to `forallTelescope`, except we
+/-- Given `ctor` of the form `fun ..xs => body`, executes `k vs body`, where
+    `vs` are free variables for `xs`. Similar to `lambdaTelescope`, except we
     account for the arity of `outputType`. -/
-def constructorTelescope (type : Expr) (outputType : Expr) (k : Array Expr → MetaM α) : MetaM α := do
+def constructorTelescope (ctor : Expr) (outputType : Expr) (k : Array Expr → Expr → MetaM α) : MetaM α := do
   let outputArity := outputType.getForallArity
-  forallTelescope type fun fvars _ => do
-    let inputFVars := fvars.take (fvars.size - outputArity)
-    k inputFVars
+  -- We use forallTelescope on the type here because `outputType` could be an
+  -- arrow type, and moreover body could be either of the form `fun ys => A` or
+  -- `f A`, so using lambdaTelescope isn't quite what we want.
 
-/-- Given an array `types`, the `i`th element of the form `forall xs[i],
-    outputType`, execute `k (vs[0] ++ ... ++ vs[n-1])`, where `vs[i]` are free
-    variables for `xs[i]`. An iterated form of `constructorTelescope`. -/
-def constructorTelescopeN (types : Array Expr) (outputTypes : Array Expr) (k : Array Expr → MetaM α) : MetaM α :=
-  ((types.zip outputTypes).foldl (fun k' (type, outputType) =>
-    fun restVars => constructorTelescope type outputType fun newVars => k' (restVars ++ newVars))
-    k) #[]
+  -- This is still a little bit ugly though; maybe we can use
+  -- lambdaBoundedTelescope if we store the number of arguments in Isomorphism?
+  forallTelescope (← inferType ctor) fun fvars _ => do
+    let inputFVars := fvars.take (fvars.size - outputArity)
+    let body := if ctor.isLambda then
+      Canonical.apply ctor inputFVars.toList
+    else
+      mkAppN ctor inputFVars
+    k inputFVars body
+
+/-- Given an array `ctors` of constructors for `outputTypes`, the `i`th element
+    of the form `fun ...xs[i], body[i]`, execute `k (vs[0] ++ ... ++ vs[n-1])
+    #[body[0], ..., body[n-1]]`, where `vs[i]` are free variables for `xs[i]`. An
+    iterated form of `constructorTelescope`. -/
+def constructorTelescopeN (ctors : Array Expr) (outputTypes : Array Expr) (k : Array (Array Expr) → Array Expr → MetaM α) : MetaM α :=
+  ((ctors.zip outputTypes).foldl (fun k' (ctor, outputType) =>
+    fun restVars bodies => constructorTelescope ctor outputType fun newVars body => k' (#[newVars] ++ restVars) (#[body] ++ bodies))
+    k) #[] #[]
+
+def constructorsTelescope (ctors : Array Expr) (outputType : Expr) (k : Array (Array Expr) → Array Expr → MetaM α) : MetaM α :=
+  constructorTelescopeN ctors (ctors.map fun _ => outputType) k
 
 /-- Takes a constructor `ctor` for `outputType` (i.e. a function with output type `outputType`)
     and a type `X` and returns the type of `ctor`, except the output type is
@@ -63,26 +78,35 @@ def constructorTelescopeN (types : Array Expr) (outputTypes : Array Expr) (k : A
 
     For example, if we recursify the constructor `id : (Nat -> Nat) -> (Nat ->
     Nat)` for `Nat -> Nat`, we obtain the type `(Nat -> Nat) -> X` -/
-def recursify (ctor : Expr) (X : Expr) (outputType : Expr) : MetaM Expr := do
-  constructorTelescope (← inferType ctor) outputType fun inputFVars => do
+def simpleRecursify (ctor : Expr) (X : Expr) (outputType : Expr) : MetaM Expr := do
+  constructorTelescope ctor outputType fun inputFVars _ => do
     mkForallFVars inputFVars X
 
-#eval show MetaM Unit from (do
-  IO.println $ ← recursify (Expr.lam `f (Expr.forallE `_ (Expr.const `Nat []) (Expr.const `Nat []) .default) (Expr.bvar 0) .default) (Expr.const `X []) (Expr.forallE `_ (Expr.const `Nat []) (Expr.const `Nat []) .default)
-)
+def recursify (ctor : Expr) (motive : Expr) (outputType : Expr) : MetaM Expr := do
+  constructorTelescope ctor outputType fun inputs packed => do
+    mkForallFVars inputs (Expr.app motive packed)
 
 /-- Given a type `t` and some constructors `ctors` for `t`, create free
     variables for a recursor type with level, constructors, and input, and then output a
     recursor of the correct type with body determined by executing `k` on these
     free variables. -/
-def mkRecursor (t : Expr) (ctors : Array Expr) (k : Level → Expr → Array Expr → Expr → MetaM Expr) : MetaM Expr := do
+def mkSimpleRecursor (t : Expr) (ctors : Array Expr) (k : Level → Expr → Array Expr → Expr → MetaM Expr) : MetaM Expr := do
   let level ← mkFreshLevelMVar
   withLocalDeclD `X (Expr.sort level) fun fvarX => do
     let ctorInfo ← ctors.mapIdxM fun i ctor => do
-      pure (Name.mkSimple s!"f_{i}", fun _ => recursify ctor fvarX t)
+      pure (Name.mkSimple s!"f_{i}", fun _ => simpleRecursify ctor fvarX t)
     withLocalDeclsD ctorInfo fun fvarCtors => do
-      withLocalDeclD `x t fun fvarInput => do
+      withLocalDeclD `t t fun fvarInput => do
         mkLambdaFVars (#[fvarX] ++ fvarCtors ++ #[fvarInput]) (← k level fvarX fvarCtors fvarInput)
+
+def mkRecursor (t : Expr) (ctors : Array Expr) (k : Level → Expr → Array Expr → Expr → MetaM Expr) : MetaM Expr := do
+  let level ← mkFreshLevelMVar
+  withLocalDeclD `motive (Expr.forallE `l t (Expr.sort level) .default) fun fvarMotive => do
+    let ctorInfo ← ctors.mapIdxM fun i ctor => do
+      pure (Name.mkSimple s!"f_{i}", fun _ => recursify ctor fvarMotive t)
+    withLocalDeclsD ctorInfo fun fvarCtors => do
+      withLocalDeclD `t t fun fvarInput => do
+        mkLambdaFVars (#[fvarMotive] ++ fvarCtors ++ #[fvarInput]) (← k level fvarMotive fvarCtors fvarInput)
 
 #eval show MetaM Unit from (do
   let ctor := (Expr.lam `f (Expr.forallE `_ (Expr.const `Nat []) (Expr.const `Nat []) .default) (Expr.bvar 0) .default)
