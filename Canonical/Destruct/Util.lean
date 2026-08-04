@@ -44,20 +44,8 @@ def constructorArity (ctor : Expr) (outputType : Expr) : MetaM Nat := do
     `vs` are free variables for `xs`. Similar to `lambdaTelescope`, except we
     account for the arity of `outputType`. -/
 def constructorTelescope (ctor : Expr) (outputType : Expr) (k : Array Expr → Expr → MetaM α) : MetaM α := do
-  let outputArity := outputType.getForallArity
-  -- We use forallTelescope on the type here because `outputType` could be an
-  -- arrow type, and moreover body could be either of the form `fun ys => A` or
-  -- `f A`, so using lambdaTelescope isn't quite what we want.
-
-  -- This is still a little bit ugly though; maybe we can use
-  -- lambdaBoundedTelescope if we store the number of arguments in Isomorphism?
-  forallTelescope (← inferType ctor) fun fvars _ => do
-    let inputFVars := fvars.take (fvars.size - outputArity)
-    let body := if ctor.isLambda then
-      Canonical.apply ctor inputFVars.toList
-    else
-      mkAppN ctor inputFVars
-    k inputFVars body
+  let arity ← constructorArity ctor outputType
+  lambdaBoundedTelescope ctor arity k
 
 /-- Given an array `ctors` of constructors for `outputTypes`, the `i`th element
     of the form `fun ...xs[i], body[i]`, execute `k (vs[0] ++ ... ++ vs[n-1])

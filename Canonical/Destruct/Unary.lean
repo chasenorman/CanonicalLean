@@ -60,7 +60,7 @@ partial def destructInduct (t : Expr) (builtinCtors : Array Expr) (builtinRec : 
   destructTrivial t
 
 partial def destructPi (t : Expr) (inputType : Expr) (outputType : Expr) : MetaM Isomorphism := do
-  let inputIso := (← destruct inputType)
+  let inputIso ← destruct inputType
   let (constructor, recursor) ← (constructorsTelescope inputIso.constructors inputType fun inputCases packedCases => do
     let outputTypes := packedCases.map fun packed => outputType.instantiate1 packed
     let outputIsos ← outputTypes.mapM destruct
@@ -69,37 +69,45 @@ partial def destructPi (t : Expr) (inputType : Expr) (outputType : Expr) : MetaM
       withLocalDeclD `Y (Expr.sort (← mkFreshLevelMVar)) fun Y => do
         -- The different branches of an inductive explicitly do not dependent on
         -- each other
-        let recursified ← outputIso.constructors.mapM (recursify · Y outputIso.t)
+        let recursified ← outputIso.constructors.mapM (simpleRecursify · Y outputIso.t)
         withLocalDeclsDND' recursified fun ctors => do
           mkForallFVars (inputCase ++ #[Y] ++ ctors) Y
 
     -- The constituent types do not depend on each other
     let constructor ← withLocalDeclsDND' constituentTypes fun constituents => do
       withLocalDeclD `y inputType fun input => do
-        let typeArgument ← mkLambdaFVars #[inputType] outputType
         let cases ← inputCases.mapIdxM fun i inputVars => do
           let specificType := outputTypes[i]!
           let specificIso := outputIsos[i]!
           let branchBody := mkAppN constituents[i]! (inputVars ++ #[specificType] ++ specificIso.constructors)
           mkLambdaFVars inputVars branchBody
-        let body := Canonical.apply inputIso.recursor (#[typeArgument] ++ cases ++ #[input]).toList
+        let motive := if inputIso.hasSimpleRecursor then
+          outputType.instantiate1 input
+        else
+          Expr.lam `a inputType outputType .default
+        let body := Canonical.apply inputIso.recursor (#[motive] ++ cases ++ #[input]).toList
         mkLambdaFVars (constituents.push input) body
 
+    -- This should definitely be refactored
     let recursor ← mkSimpleRecursor t #[constructor] fun _ _ ctors f => do
       let ctor := ctors[0]!
-      let projs ← inputCases.mapIdxM fun i inputVars => do
-        let level ← mkFreshLevelMVar
+      let projs ← constituentTypes.mapIdxM fun i constituentType => do
         let specificIso := outputIsos[i]!
-        let specificType := outputTypes[i]!
-        let specificPacked := packedCases[i]!
-        withLocalDeclD `Y (Expr.sort level) fun Y => do
-          constructorTelescope constructor t fun constituents _ => do
-            let motive := if specificIso.hasSimpleRecursor then Y
+        forallTelescope constituentType fun constituentInputs _ => do
+          let numInputs ← constructorArity inputIso.constructors[i]! inputType
+          let (unpacked, Y, recursified) := (
+            constituentInputs.take numInputs,
+            constituentInputs[numInputs]!,
+            constituentInputs.drop (numInputs + 1)
+          )
+          let specificType := specificIso.t.replaceFVars inputCases[i]! unpacked
+          let specificRecursor := specificIso.recursor.replaceFVars inputCases[i]! unpacked
+          let motive := if specificIso.hasSimpleRecursor then Y
             else Expr.lam `_ specificType Y .default
-            let body := Canonical.apply outputIsos[i]!.recursor
-              (#[motive] ++ constituents ++ #[Expr.app f specificPacked]).toList
-            mkLambdaFVars (inputVars ++ #[Y] ++ constituents) body
-      return Canonical.apply ctor projs.toList
+          let app := Expr.app f $ Canonical.apply inputIso.constructors[i]! unpacked.toList
+          let body := Canonical.apply specificRecursor (#[motive] ++ recursified ++ #[app]).toList
+          mkLambdaFVars constituentInputs body
+      return mkAppN ctor projs
 
     return (constructor, recursor)
   )
@@ -121,20 +129,26 @@ partial def destruct (t : Expr) : MetaM Isomorphism := do
     destructTrivial t
   | .induct builtinCtors builtinRec => do
     destructInduct t builtinCtors builtinRec
-  | .pi inputTypes outputType => destructPi t inputTypes outputType
+  | .pi inputType outputType => destructPi t inputType outputType
 end
 
 #eval (do
   let on := Expr.app (Expr.const `Option [0]) (Expr.const `Nat [])
   let pon := mkAppN (Expr.const `Prod [0, 0]) #[on, (Expr.const `Unit [])]
-  IO.println $ (← destruct pon).constructors[0]!
+  let t := (Expr.forallE `v pon (Expr.const ``Nat []) .default)
+  let iso ← destruct t
+  IO.println $ ← ppExpr (← recursiveBetaReduce iso.constructors[0]!)
+  IO.println $ ← ppExpr (← recursiveBetaReduce iso.recursor)
   IO.println ""
-  IO.println $ (← destruct pon).recursor
-  -- let t := (Expr.forallE `v pon (Expr.const `Nat []) .default)
-  -- let iso := (← destruct t).get!
-  -- IO.println $ (← recursiveBetaReduce iso.constructors[0]!)
+
+  let t := (Expr.forallE `A (Expr.sort 0) (mkAppN (Expr.const `Not []) #[Expr.bvar 0]) .default)
+  let iso ← destruct t
+  IO.println $ (← recursiveBetaReduce iso.constructors[0]!)
+  IO.println ""
+  IO.println $ (← recursiveBetaReduce iso.recursor)
   )
 
+-- Examples.
 -- def constructor1 : Nat → Option Nat × Nat := fun m => (.none, m)
 -- def constructor2 : Nat → Nat → Option Nat × Nat := fun n m => (.some n, m)
 --
