@@ -22,28 +22,28 @@ structure Isomorphism where
 
 /-- Returns an expression of nested recursor calls that recurse on `values` in
     sequence, executing `k` on all possible branching cases. -/
-partial def withRecurseOn (X : Expr) (values : Array Expr) (isos : Array Isomorphism) (k : Array Nat → Array Expr → MetaM Expr) : MetaM Expr := do
-  let rec loop (valueIdx : Nat) (ctorIndices : Array Nat) (vars : Array Expr) : MetaM Expr := do
-    if valueIdx == values.size then
-      return ← k ctorIndices vars
-    let cases ← isos[valueIdx]!.constructors.mapIdxM fun ctorIdx ctor => do
-      constructorTelescope ctor isos[valueIdx]!.t fun newVars _ => do
-        mkLambdaFVars newVars (← loop (valueIdx + 1) (ctorIndices.push ctorIdx) (vars ++ newVars))
-    let args := #[X] ++ cases ++ #[values[valueIdx]!]
-    let result := Canonical.apply isos[valueIdx]!.recursor args.toList
-    -- A recursive beta reduction is needed since we substitute lambdas into the
-    -- recursors, and moreover, these lambdas may very well not be at the head
-    -- of the expression. A potential idea to fix this might be to have some of
-    -- the recursor arguments eta-reduced
-    recursiveBetaReduce result
-  loop 0 #[] #[]
+-- partial def withRecurseOn (X : Expr) (values : Array Expr) (isos : Array Isomorphism) (k : Array Nat → Array Expr → MetaM Expr) : MetaM Expr := do
+--   let rec loop (valueIdx : Nat) (ctorIndices : Array Nat) (vars : Array Expr) : MetaM Expr := do
+--     if valueIdx == values.size then
+--       return ← k ctorIndices vars
+--     let cases ← isos[valueIdx]!.constructors.mapIdxM fun ctorIdx ctor => do
+--       constructorTelescope ctor isos[valueIdx]!.t fun newVars _ => do
+--         mkLambdaFVars newVars (← loop (valueIdx + 1) (ctorIndices.push ctorIdx) (vars ++ newVars))
+--     let args := #[X] ++ cases ++ #[values[valueIdx]!]
+--     let result := Canonical.apply isos[valueIdx]!.recursor args.toList
+--     -- A recursive beta reduction is needed since we substitute lambdas into the
+--     -- recursors, and moreover, these lambdas may very well not be at the head
+--     -- of the expression. A potential idea to fix this might be to have some of
+--     -- the recursor arguments eta-reduced
+--     recursiveBetaReduce result
+--   loop 0 #[] #[]
 
 
-def destructTrivial (t : Expr) : MetaM (Option Isomorphism) := do
+def destructTrivial (t : Expr) : MetaM Isomorphism := do
   let constructor := Expr.lam `x t (Expr.bvar 0) .default
   let recursor ← mkRecursor t #[constructor] fun _ _ ctors input => do
     return Expr.app ctors[0]! input
-  return .some {
+  return {
     t := t,
     constructors := #[constructor],
     recursor := recursor,
@@ -51,21 +51,19 @@ def destructTrivial (t : Expr) : MetaM (Option Isomorphism) := do
   }
 
 mutual
--- Suffers from improperly handling dependencies as we are currently losing the
--- fvars.
-partial def destructCtor (t : Expr) (ctor : Expr) : MetaM (Option (Array Isomorphism)) := do
-  let optIsos ← constructorTelescope ctor t fun fvars _ => do
-    fvars.mapM fun input => do destruct (← inferType input)
-  return optIsos.mapM id
+-- partial def destructCtor (t : Expr) (ctor : Expr) : MetaM (Option (Array Isomorphism)) := do
+--   let optIsos ← constructorTelescope ctor t fun fvars _ => do
+--     fvars.mapM fun input => do destruct (← inferType input)
+--   return optIsos.mapM id
 
-partial def destructInduct (t : Expr) (builtinCtors : Array Expr) (builtinRec : Level → Expr) : MetaM (Option Isomorphism) := do
+partial def destructInduct (t : Expr) (builtinCtors : Array Expr) (builtinRec : Level → Expr) : MetaM Isomorphism := do
   destructTrivial t
 
-partial def destructPi (t : Expr) (inputType : Expr) (outputType : Expr) : MetaM (Option Isomorphism) := do
-  let .some inputIso := (← destruct inputType) | return .none
-  let Option.some (constructor, recursor) ← (constructorsTelescope inputIso.constructors inputType fun inputCases packedCases => do
+partial def destructPi (t : Expr) (inputType : Expr) (outputType : Expr) : MetaM Isomorphism := do
+  let inputIso := (← destruct inputType)
+  let (constructor, recursor) ← (constructorsTelescope inputIso.constructors inputType fun inputCases packedCases => do
     let outputTypes := packedCases.map fun packed => outputType.instantiate1 packed
-    let .some outputIsos := (← outputTypes.mapM destruct).mapM id | return .none
+    let outputIsos ← outputTypes.mapM destruct
 
     let constituentTypes ← (inputCases.zip outputIsos).mapM fun (inputCase, outputIso) => do
       withLocalDeclD `Y (Expr.sort (← mkFreshLevelMVar)) fun Y => do
@@ -103,20 +101,20 @@ partial def destructPi (t : Expr) (inputType : Expr) (outputType : Expr) : MetaM
             mkLambdaFVars (inputVars ++ #[Y] ++ constituents) body
       return Canonical.apply ctor projs.toList
 
-    return .some (constructor, recursor)
-  ) | return .none
-  return .some {
+    return (constructor, recursor)
+  )
+  return {
     t,
     constructors := #[constructor],
     recursor,
     hasSimpleRecursor := true
   }
 
-partial def destruct (t : Expr) : MetaM (Option Isomorphism) := do
-  if !(← inferType t).isSort then return .none
+partial def destruct (t : Expr) : MetaM Isomorphism := do
+  if !(← inferType t).isSort then panic! s!"Tried to call destruct on non-sort expression {t}"
   let t ← whnf t
   let optInfo ← extractInfo t
-  if optInfo.isNone then return .none
+  if optInfo.isNone then return ← destructTrivial t
 
   match optInfo.get! with
   | .trivial => do
@@ -129,9 +127,9 @@ end
 #eval (do
   let on := Expr.app (Expr.const `Option [0]) (Expr.const `Nat [])
   let pon := mkAppN (Expr.const `Prod [0, 0]) #[on, (Expr.const `Unit [])]
-  IO.println $ (← destruct pon).get!.constructors[0]!
+  IO.println $ (← destruct pon).constructors[0]!
   IO.println ""
-  IO.println $ (← destruct pon).get!.recursor
+  IO.println $ (← destruct pon).recursor
   -- let t := (Expr.forallE `v pon (Expr.const `Nat []) .default)
   -- let iso := (← destruct t).get!
   -- IO.println $ (← recursiveBetaReduce iso.constructors[0]!)
