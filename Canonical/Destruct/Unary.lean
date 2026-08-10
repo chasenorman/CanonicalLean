@@ -21,6 +21,7 @@ structure Bijection where
   unpack : Array Expr
   deriving Inhabited
 
+-- Printing
 def Bijection.p (b : Bijection) : String :=
   let pack := b.pack
   let unpack := b.unpack.map fun e => s!"{e}"
@@ -33,6 +34,7 @@ def Bijection.pp (b : Bijection) : MetaM String := do
   let unpacked' := "\n".intercalate unpacked.toList
   return s!"\{\n pack := {pack},\n unpack := [\n  {unpacked'}\n ]\n}"
 
+-- Utils
 def apply (fn : Expr) (arg : Expr) : Expr :=
   match fn with
   | Expr.lam _ _ body _ => body.instantiate1 arg
@@ -40,6 +42,12 @@ def apply (fn : Expr) (arg : Expr) : Expr :=
 
 def applyN (fn : Expr) (args : Array Expr) : Expr :=
   args.foldl (fun app arg => apply app arg) fn
+
+def lambdaBinders (lam : Expr) (n : Nat) : List (Name × Expr) :=
+  if n == 0 then [] else
+  match lam with
+  | Expr.lam name type body _ => (name, type)::lambdaBinders body (n-1)
+  | _ => panic! "Destruct.lambdaBinders expected a lambda, got {lam}"
 
 mutual
 partial def destructTrivial (t : Expr) (binderName : Name) : MetaM Bijection := do
@@ -68,11 +76,10 @@ partial def destructPi (t : Expr) (binderName : Name)
     -- Perhaps I could be misinterpreting why `.abstract` was originally used
     -- above instead of `mkLambdaFVars`?
     --
-    -- This implementation maps over `unpack` and then takes the output type of
-    -- each projection, which I believe is technically correct but also looks
-    -- very suspicious. Ideally we should be able to do away with `inferType`.
-    let types := unpack.map fun field =>
-      (field.bindingName!, .default, fun _ => do pure (← inferType field).bindingBody!)
+    -- let types := output.unpack.map fun field =>
+    --   (field.bindingName!, .default, fun _ => pure (field.bindingDomain!.abstract vars))
+    let types := (lambdaBinders output.pack output.unpack.size).toArray.map fun (name, type) =>
+      (name, .default, fun fs => do mkForallFVars vars (type.instantiate (fs.map fun f => mkAppN f vars)))
 
     withLocalDecls types fun fs => do
       let body := applyN output.pack (fs.map (mkAppN · vars))
@@ -93,10 +100,6 @@ partial def destruct (t : Expr) (binderName : Name) : MetaM Bijection := do
     match headFn.constName? with
     | .none => destructTrivial t binderName
     | .some headName =>
-      -- TODO: Destruct won't properly recognize single constructor inductives
-      -- as structures if we do this. The code still currently checks this,
-      -- however, because (unless I'm mistaken) Expr.proj, which is used in
-      -- destructStruct, does not work for single constructor inductives.
       match getStructureInfo? (← getEnv) headName with
       | .none => destructTrivial t binderName
       | .some info =>
@@ -113,12 +116,12 @@ structure Bundle (p : Nat → Prop) where
   proof : p value
 
 #eval show MetaM Unit from (do
-  let p := Expr.forallE `n (Expr.const `Nat []) (Expr.sort 0) .default
-  let t := Expr.forallE `p p (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0]) .default
-  IO.println t
-  IO.println $ ← check t
+  -- let p := Expr.forallE `n (Expr.const `Nat []) (Expr.sort 0) .default
+  -- let t := Expr.forallE `p p (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0]) .default
+  -- IO.println t
+  -- IO.println $ ← check t
   -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.forallE `m (Expr.const `Nat []) (Expr.const `Nat []) .default) .default
-  -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.const `Nat []) .default
+  let t := Expr.forallE `n (Expr.const `Nat []) (Expr.const `Nat []) .default
   let b ← destruct t `x
   IO.println b.p
 )
