@@ -25,14 +25,14 @@ structure Bijection where
 def Bijection.p (b : Bijection) : String :=
   let pack := b.pack
   let unpack := b.unpack.map fun e => s!"{e}"
-  let unpack' := "\n".intercalate unpack.toList
+  let unpack' := "\n  ".intercalate unpack.toList
   s!"\{\n pack := {pack},\n unpack := [\n  {unpack'}\n ]\n}"
 
 def Bijection.pp (b : Bijection) : MetaM String := do
   let pack ← ppExpr b.pack
-  let unpacked ← b.unpack.mapM fun e => do return " " ++ toString (← ppExpr e)
-  let unpacked' := "\n".intercalate unpacked.toList
-  return s!"\{\n pack := {pack},\n unpack := [\n  {unpacked'}\n ]\n}"
+  let unpack ← b.unpack.mapM fun e => do return toString (← ppExpr e)
+  let unpack' := "\n  ".intercalate unpack.toList
+  return s!"\{\n pack := {pack},\n unpack := [\n  {unpack'}\n ]\n}"
 
 -- Utils
 def apply (fn : Expr) (arg : Expr) : Expr :=
@@ -49,14 +49,40 @@ def lambdaBinders (lam : Expr) (n : Nat) : List (Name × Expr) :=
   | Expr.lam name type body _ => (name, type)::lambdaBinders body (n-1)
   | _ => panic! "Destruct.lambdaBinders expected a lambda, got {lam}"
 
+partial def packTelescope (bijs : Array Bijection) (fvars : Array Expr) (k : Array (Array Expr) → Array Expr → MetaM α) : MetaM α := do
+  let rec recurse (i : Nat) (varBlocks : Array (Array Expr)) (packedBlocks : Array Expr) (k : Array (Array Expr) → Array Expr → MetaM α) : MetaM α := do
+    if i == bijs.size then return ← k varBlocks packedBlocks
+    let b := bijs[i]!
+    let pack := b.pack.replaceFVars (fvars.take i) packedBlocks
+    lambdaBoundedTelescope pack b.unpack.size fun vars packed => do
+      recurse (i + 1) (varBlocks.push vars) (packedBlocks.push packed) k
+  recurse 0 #[] #[] k
+
 mutual
 partial def destructTrivial (t : Expr) (binderName : Name) : MetaM Bijection := do
   let id := Expr.lam binderName t (Expr.bvar 0) .default
   return ⟨id, #[id]⟩
 
 partial def destructStruct (t : Expr) (binderName : Name)
-  (fields : Nat) (builtinCtor : Expr) : MetaM Bijection := do
-  destructTrivial t binderName
+  (structName : Name) (numFields : Nat) (builtinCtor : Expr) : MetaM Bijection := do
+  lambdaBoundedTelescope builtinCtor numFields fun fvars packed => do
+    let lctx ← getLCtx
+    let fvarInfo := fvars.map fun fvar => lctx.get! fvar.fvarId!
+    let types := fvarInfo.map (·.type)
+    let names := fvarInfo.map (·.userName)
+    let bijs ← (types.zip names).mapM fun (type, name) => destruct type name
+
+    -- let pack :=
+    let pack ← packTelescope bijs fvars fun varBlocks packedBlocks => do
+      mkLambdaFVars varBlocks.flatten (packed.replaceFVars fvars packedBlocks)
+
+    let unpack ← withLocalDecl binderName .default t fun fvar => do
+      let projs := (Array.range numFields).map (Expr.proj structName · fvar)
+      let unpacks ← (bijs.zip projs).mapM fun (b, proj) => do
+        b.unpack.mapM fun lam => mkLambdaFVars #[fvar] (apply lam proj)
+      return unpacks.flatten
+
+    return ⟨pack, unpack⟩
 
 partial def destructPi (t : Expr) (binderName : Name)
   (inputName : Name) (inputType : Expr) (outputType : Expr) (inputInfo : BinderInfo) : MetaM Bijection := do
@@ -68,16 +94,6 @@ partial def destructPi (t : Expr) (binderName : Name)
     let unpack ← withLocalDecl binderName .default t fun f => do
       output.unpack.mapM fun field => mkLambdaFVars (#[f] ++ vars) (apply field (f.app packed))
 
-    -- TODO: Chase's implementation maps over output.unpack and gives the
-    -- type for `field` as `field.bindingDomain!.abstract vars`. This cannot be
-    -- correct since if `t` is something like `Nat → Nat`, `types` would
-    -- look like `#[Nat]` instead of `#[Nat → Nat]`, causing `pack` (via `fs`
-    -- below) to look like `fun (x : Nat) (n : Nat) => x n` (definitely wrong).
-    -- Perhaps I could be misinterpreting why `.abstract` was originally used
-    -- above instead of `mkLambdaFVars`?
-    --
-    -- let types := output.unpack.map fun field =>
-    --   (field.bindingName!, .default, fun _ => pure (field.bindingDomain!.abstract vars))
     let types := (lambdaBinders output.pack output.unpack.size).toArray.map fun (name, type) =>
       (name, .default, fun fs => do mkForallFVars vars (type.instantiate (fs.map fun f => mkAppN f vars)))
 
@@ -106,8 +122,8 @@ partial def destruct (t : Expr) (binderName : Name) : MetaM Bijection := do
         let fields := info.fieldNames.size
         let headLevels := headFn.constLevels!
         let induct ← getConstInfoInduct headName
-        let ctor := mkAppN (Expr.const induct.ctors[0]! headLevels) headArgs
-        destructStruct t binderName fields (← etaExpand ctor)
+        let ctor ← etaExpand (Expr.const induct.ctors[0]! headLevels)
+        destructStruct t binderName headName fields (applyN ctor headArgs)
   | _ => destructTrivial t binderName
 end
 
@@ -116,12 +132,15 @@ structure Bundle (p : Nat → Prop) where
   proof : p value
 
 #eval show MetaM Unit from (do
-  -- let p := Expr.forallE `n (Expr.const `Nat []) (Expr.sort 0) .default
-  -- let t := Expr.forallE `p p (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0]) .default
+  let p := Expr.forallE `n (Expr.const `Nat []) (Expr.sort 0) .default
+  let t := Expr.forallE `p p (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0]) .default
   -- IO.println t
   -- IO.println $ ← check t
   -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.forallE `m (Expr.const `Nat []) (Expr.const `Nat []) .default) .default
-  let t := Expr.forallE `n (Expr.const `Nat []) (Expr.const `Nat []) .default
+  -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.const `Nat []) .default
+  -- let t := Expr.app (Expr.const ``Bundle []) (Expr.lam `n (Expr.const `Nat []) (Expr.const `True.intro []) .default)
+  -- let t := Expr.forallE `h (Expr.sort 0)
   let b ← destruct t `x
-  IO.println b.p
+  let _ ← check b.unpack[0]!
+  IO.println $ ← b.pp
 )
