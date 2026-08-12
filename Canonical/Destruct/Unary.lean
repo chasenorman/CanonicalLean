@@ -92,7 +92,11 @@ partial def destructStruct (t : Expr) (binderName : Name)
     let unpack ← withLocalDecl binderName .default t fun fvar => do
       let projs := (Array.range numFields).map (Expr.proj structName · fvar)
       let unpacks ← (bijs.zip projs).mapM fun (b, proj) => do
-        b.unpack.mapM fun lam => mkLambdaFVars #[fvar] (apply lam proj)
+        b.unpack.mapM fun lam => do
+          -- TODO: is this line actually needed? Is there a situation in which
+          -- the body of an unpack can contain free variables from `fvars`?
+          let lam' := lam.replaceFVars fvars projs
+          mkLambdaFVars #[fvar] (apply lam' proj)
       return unpacks.flatten
 
     return ⟨pack, unpack⟩
@@ -140,20 +144,25 @@ partial def destruct (t : Expr) (binderName : Name) : MetaM Bijection := do
   | _ => destructTrivial t binderName
 end
 
-structure Bundle (p : Nat → Prop) where
-  value : Nat
+structure Bundle (X : Type) (p : X → Prop) where
+  value : X
   proof : p value
 
 #eval show MetaM Unit from (do
-  let p := Expr.forallE `n (Expr.const `Nat []) (Expr.sort 0) .default
-  let t := Expr.forallE `p p (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0]) .default
-  -- IO.println t
-  -- IO.println $ ← check t
+  -- let p := Expr.forallE `n (Expr.const `Nat []) (Expr.sort 0) .default
+  -- let t := Expr.forallE `p p (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0]) .default
+
   -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.forallE `m (Expr.const `Nat []) (Expr.const `Nat []) .default) .default
+
   -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.const `Nat []) .default
+
   -- let t := Expr.app (Expr.const ``Bundle []) (Expr.lam `n (Expr.const `Nat []) (Expr.const `True.intro []) .default)
-  -- let t := Expr.forallE `h (Expr.sort 0)
+
   -- let t := Expr.forallE `p p (mkAppN (Expr.const `Exists [1]) #[Expr.const `Nat [], Expr.bvar 0]) .default
+
+  -- (X : Type) → Bundle X (fun (x : X) → x = x)
+  let t := Expr.forallE `X (Expr.sort 1) (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0, Expr.lam `x (Expr.bvar 0) (mkAppN (Expr.const `Eq [1]) #[Expr.bvar 1, Expr.bvar 0, Expr.bvar 0]) .default]) .default
   let b ← destruct t `x
-  IO.println b.p
+  IO.println $ b.p
+  IO.println $ ← b.unpack.mapM check
 )
