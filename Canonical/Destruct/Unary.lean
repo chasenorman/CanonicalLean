@@ -47,7 +47,7 @@ def lambdaBinders (lam : Expr) (n : Nat) : List (Name × Expr) :=
   if n == 0 then [] else
   match lam with
   | Expr.lam name type body _ => (name, type)::lambdaBinders body (n-1)
-  | _ => panic! "Destruct.lambdaBinders expected a lambda, got {lam}"
+  | _ => panic! s!"Destruct.lambdaBinders expected a lambda, got {lam}"
 
 partial def packTelescope (bijs : Array Bijection) (fvars : Array Expr) (k : Array (Array Expr) → Array Expr → MetaM α) : MetaM α := do
   let rec recurse (i : Nat) (varBlocks : Array (Array Expr)) (packedBlocks : Array Expr) (k : Array (Array Expr) → Array Expr → MetaM α) : MetaM α := do
@@ -58,11 +58,25 @@ partial def packTelescope (bijs : Array Bijection) (fvars : Array Expr) (k : Arr
       recurse (i + 1) (varBlocks.push vars) (packedBlocks.push packed) k
   recurse 0 #[] #[] k
 
-mutual
-partial def destructTrivial (t : Expr) (binderName : Name) : MetaM Bijection := do
+def destructTrivial (t : Expr) (binderName : Name) : MetaM Bijection := do
   let id := Expr.lam binderName t (Expr.bvar 0) .default
   return ⟨id, #[id]⟩
 
+def destructAdhoc (t : Expr) (binderName : Name) (headName : Name) : MetaM Bijection := do
+  let fn := t.getAppFn
+  let args := t.getAppArgs
+
+  if headName == ``True then
+    return ⟨Expr.const ``True.intro [], #[]⟩
+  else if headName == ``Unit then
+    return ⟨Expr.const ``Unit.unit [], #[]⟩
+  else if headName == ``PUnit then
+    return ⟨Expr.const ``PUnit.unit fn.constLevels!, #[]⟩
+  -- TODO: Handle single constructor inductives like Exists correctly
+
+  destructTrivial t binderName
+
+mutual
 partial def destructStruct (t : Expr) (binderName : Name)
   (structName : Name) (numFields : Nat) (builtinCtor : Expr) : MetaM Bijection := do
   lambdaBoundedTelescope builtinCtor numFields fun fvars packed => do
@@ -72,7 +86,6 @@ partial def destructStruct (t : Expr) (binderName : Name)
     let names := fvarInfo.map (·.userName)
     let bijs ← (types.zip names).mapM fun (type, name) => destruct type name
 
-    -- let pack :=
     let pack ← packTelescope bijs fvars fun varBlocks packedBlocks => do
       mkLambdaFVars varBlocks.flatten (packed.replaceFVars fvars packedBlocks)
 
@@ -117,7 +130,7 @@ partial def destruct (t : Expr) (binderName : Name) : MetaM Bijection := do
     | .none => destructTrivial t binderName
     | .some headName =>
       match getStructureInfo? (← getEnv) headName with
-      | .none => destructTrivial t binderName
+      | .none => destructAdhoc t binderName headName
       | .some info =>
         let fields := info.fieldNames.size
         let headLevels := headFn.constLevels!
@@ -140,7 +153,7 @@ structure Bundle (p : Nat → Prop) where
   -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.const `Nat []) .default
   -- let t := Expr.app (Expr.const ``Bundle []) (Expr.lam `n (Expr.const `Nat []) (Expr.const `True.intro []) .default)
   -- let t := Expr.forallE `h (Expr.sort 0)
+  -- let t := Expr.forallE `p p (mkAppN (Expr.const `Exists [1]) #[Expr.const `Nat [], Expr.bvar 0]) .default
   let b ← destruct t `x
-  let _ ← check b.unpack[0]!
-  IO.println $ ← b.pp
+  IO.println b.p
 )
