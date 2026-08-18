@@ -10,6 +10,8 @@ namespace Destruct
 
 public section
 
+abbrev DestructM := ReaderT NameSet MetaM
+
 /-- A mapping between an expression `e` and its constituent expressions `e₁`,
     ..., `eₙ`.
 
@@ -58,13 +60,13 @@ partial def packTelescope (bijs : Array Bijection) (fvars : Array Expr) (k : Arr
       recurse (i + 1) (varBlocks.push vars) (packedBlocks.push packed) k
   recurse 0 #[] #[] k
 
-def destructTrivial (t : Expr) (binderName : Name) : MetaM Bijection := do
+def destructTrivial (t : Expr) (binderName : Name) : DestructM Bijection := do
   let id := Expr.lam binderName t (Expr.bvar 0) .default
   return ⟨id, #[id]⟩
 
-def destructAdhoc (t : Expr) (binderName : Name) (headName : Name) : MetaM Bijection := do
+def destructAdhoc (t : Expr) (binderName : Name) (headName : Name) : DestructM Bijection := do
   let fn := t.getAppFn
-  let args := t.getAppArgs
+  let _args := t.getAppArgs
 
   if headName == ``True then
     return ⟨Expr.const ``True.intro [], #[]⟩
@@ -78,7 +80,7 @@ def destructAdhoc (t : Expr) (binderName : Name) (headName : Name) : MetaM Bijec
 
 mutual
 partial def destructStruct (t : Expr) (binderName : Name)
-  (structName : Name) (numFields : Nat) (builtinCtor : Expr) : MetaM Bijection := do
+  (structName : Name) (numFields : Nat) (builtinCtor : Expr) : DestructM Bijection := do
   lambdaBoundedTelescope builtinCtor numFields fun fvars packed => do
     let lctx ← getLCtx
     let fvarInfo := fvars.map fun fvar => lctx.get! fvar.fvarId!
@@ -102,7 +104,7 @@ partial def destructStruct (t : Expr) (binderName : Name)
     return ⟨pack, unpack⟩
 
 partial def destructPi (t : Expr) (binderName : Name)
-  (inputName : Name) (inputType : Expr) (outputType : Expr) (inputInfo : BinderInfo) : MetaM Bijection := do
+  (inputName : Name) (inputType : Expr) (outputType : Expr) (inputInfo : BinderInfo) : DestructM Bijection := do
   let input ← destruct inputType inputName
   lambdaBoundedTelescope input.pack input.unpack.size fun vars packed => do
     -- TODO: Is binderName the correct thing to put here? (I think not)
@@ -121,48 +123,56 @@ partial def destructPi (t : Expr) (binderName : Name)
         let pack ← mkLambdaFVars (fs.push var) replaced
         return ⟨pack, unpack⟩
 
-partial def destruct (t : Expr) (binderName : Name) : MetaM Bijection := do
-  match t with
-  | Expr.forallE inputName inputType outputType inputInfo =>
-    destructPi t binderName inputName inputType outputType inputInfo
-  | Expr.const _ _
-  | Expr.app _ _ => do
-    let headFn := t.getAppFn
-    let headArgs := t.getAppArgs
+partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs : Array Expr) : DestructM Bijection := do
+  if headFn.constName?.isNone then return ← destructTrivial t binderName
+  let headName := headFn.constName!
 
-    match headFn.constName? with
-    | .none => destructTrivial t binderName
-    | .some headName =>
-      match getStructureInfo? (← getEnv) headName with
-      | .none => destructAdhoc t binderName headName
-      | .some info =>
-        let fields := info.fieldNames.size
-        let headLevels := headFn.constLevels!
-        let induct ← getConstInfoInduct headName
-        let ctor ← etaExpand (Expr.const induct.ctors[0]! headLevels)
-        destructStruct t binderName headName fields (applyN ctor headArgs)
-  | _ => destructTrivial t binderName
+  if (← read).contains headName then
+    let info := getStructureInfo (← getEnv) headName
+    let fields := info.fieldNames.size
+    let headLevels := headFn.constLevels!
+    let induct ← getConstInfoInduct headName
+    let ctor ← etaExpand (Expr.const induct.ctors[0]! headLevels)
+    return ← destructStruct t binderName headName fields (applyN ctor headArgs)
+
+  destructAdhoc t binderName headName
+
+partial def destruct (t : Expr) (binderName : Name) : DestructM Bijection := do
+  if t.isForall then
+    destructPi t binderName t.bindingName! t.bindingDomain! t.bindingBody! t.bindingInfo!
+  else if t.isConst || t.isApp then
+    destructApp t binderName t.getAppFn t.getAppArgs
+  else
+    destructTrivial t binderName
 end
+
+/--
+TODO:
+-> What exactly is going on with destructTactic (why is output List (⋯ × MVarId)?)
+-> Obtain fun examples for paper?
+-/
 
 structure Bundle (X : Type) (p : X → Prop) where
   value : X
   proof : p value
 
-#eval show MetaM Unit from (do
-  -- let p := Expr.forallE `n (Expr.const `Nat []) (Expr.sort 0) .default
-  -- let t := Expr.forallE `p p (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0]) .default
+theorem example_theorem : ∀ (n : Nat), n * n = 1 ↔ n = 1 := by sorry
 
-  -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.forallE `m (Expr.const `Nat []) (Expr.const `Nat []) .default) .default
+#eval show MetaM Unit from ReaderT.run (do
+  -- Unit -> Nat -> Nat
+  -- let t := Expr.forallE `n (Expr.const `Unit []) (Expr.forallE `m (Expr.const `Nat []) (Expr.const `Nat []) .default) .default
 
   -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.const `Nat []) .default
-
-  -- let t := Expr.app (Expr.const ``Bundle []) (Expr.lam `n (Expr.const `Nat []) (Expr.const `True.intro []) .default)
 
   -- let t := Expr.forallE `p p (mkAppN (Expr.const `Exists [1]) #[Expr.const `Nat [], Expr.bvar 0]) .default
 
   -- (X : Type) → Bundle X (fun (x : X) → x = x)
-  let t := Expr.forallE `X (Expr.sort 1) (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0, Expr.lam `x (Expr.bvar 0) (mkAppN (Expr.const `Eq [1]) #[Expr.bvar 1, Expr.bvar 0, Expr.bvar 0]) .default]) .default
+  -- let t := Expr.forallE `X (Expr.sort 1) (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0, Expr.lam `x (Expr.bvar 0) (mkAppN (Expr.const `Eq [1]) #[Expr.bvar 1, Expr.bvar 0, Expr.bvar 0]) .default]) .default
+
+  -- ∀ n : Nat, n * n = 1 ↔ n = 1
+  let t ← inferType (Expr.const ``example_theorem [])
   let b ← destruct t `x
-  IO.println $ b.p
-  IO.println $ ← b.unpack.mapM check
-)
+  IO.println $ ← b.pp
+  IO.println $ ← check b.pack
+  IO.println $ ← b.unpack.mapM (fun e => do check e)
+) (NameSet.ofArray #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array])
