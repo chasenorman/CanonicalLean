@@ -6,9 +6,11 @@ public import Lean.Meta.Basic
 
 open Lean Core Meta
 
-namespace Destruct
+namespace Unary
 
 public section
+
+def STRUCTURES := #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array]
 
 abbrev DestructM := ReaderT NameSet MetaM
 
@@ -21,20 +23,27 @@ abbrev DestructM := ReaderT NameSet MetaM
 structure Bijection where
   pack : Expr
   unpack : Array Expr
+
+  -- TODO: Find a better place to put this
+  -- Specifically for destructTactic to determine the unpacked arities of
+  -- functions
+  arities : Option (List Nat)
   deriving Inhabited
 
 -- Printing
 def Bijection.p (b : Bijection) : String :=
+  let arities := b.arities
   let pack := b.pack
   let unpack := b.unpack.map fun e => s!"{e}"
   let unpack' := "\n  ".intercalate unpack.toList
-  s!"\{\n pack := {pack},\n unpack := [\n  {unpack'}\n ]\n}"
+  s!"\{\n arities := {arities},\n pack := {pack},\n unpack := [\n  {unpack'}\n ]\n}"
 
 def Bijection.pp (b : Bijection) : MetaM String := do
+  let arities := b.arities
   let pack ← ppExpr b.pack
   let unpack ← b.unpack.mapM fun e => do return toString (← ppExpr e)
   let unpack' := "\n  ".intercalate unpack.toList
-  return s!"\{\n pack := {pack},\n unpack := [\n  {unpack'}\n ]\n}"
+  return s!"\{\n arities := {arities},\n pack := {pack},\n unpack := [\n  {unpack'}\n ]\n}"
 
 -- Utils
 def apply (fn : Expr) (arg : Expr) : Expr :=
@@ -62,18 +71,18 @@ partial def packTelescope (bijs : Array Bijection) (fvars : Array Expr) (k : Arr
 
 def destructTrivial (t : Expr) (binderName : Name) : DestructM Bijection := do
   let id := Expr.lam binderName t (Expr.bvar 0) .default
-  return ⟨id, #[id]⟩
+  return ⟨id, #[id], .none⟩
 
 def destructAdhoc (t : Expr) (binderName : Name) (headName : Name) : DestructM Bijection := do
   let fn := t.getAppFn
   let _args := t.getAppArgs
 
   if headName == ``True then
-    return ⟨Expr.const ``True.intro [], #[]⟩
+    return ⟨Expr.const ``True.intro [], #[], .none⟩
   else if headName == ``Unit then
-    return ⟨Expr.const ``Unit.unit [], #[]⟩
+    return ⟨Expr.const ``Unit.unit [], #[], .none⟩
   else if headName == ``PUnit then
-    return ⟨Expr.const ``PUnit.unit fn.constLevels!, #[]⟩
+    return ⟨Expr.const ``PUnit.unit fn.constLevels!, #[], .none⟩
   -- TODO: Handle single constructor inductives like Exists correctly
 
   destructTrivial t binderName
@@ -101,7 +110,7 @@ partial def destructStruct (t : Expr) (binderName : Name)
           mkLambdaFVars #[fvar] (apply lam' proj)
       return unpacks.flatten
 
-    return ⟨pack, unpack⟩
+    return ⟨pack, unpack, .none⟩
 
 partial def destructPi (t : Expr) (binderName : Name)
   (inputName : Name) (inputType : Expr) (outputType : Expr) (inputInfo : BinderInfo) : DestructM Bijection := do
@@ -121,7 +130,7 @@ partial def destructPi (t : Expr) (binderName : Name)
       withLocalDecl inputName inputInfo inputType fun var => do
         let replaced := body.replaceFVars vars (input.unpack.map (apply · var))
         let pack ← mkLambdaFVars (fs.push var) replaced
-        return ⟨pack, unpack⟩
+        return ⟨pack, unpack, input.unpack.size::(output.arities.getD [])⟩
 
 partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs : Array Expr) : DestructM Bijection := do
   if headFn.constName?.isNone then return ← destructTrivial t binderName
@@ -146,9 +155,25 @@ partial def destruct (t : Expr) (binderName : Name) : DestructM Bijection := do
     destructTrivial t binderName
 end
 
+partial def destructTactic (goal : MVarId) (premises : Array Name) : MetaM (Array (Array FVarId × MVarId)) := do
+  let toRevert ← goal.withContext do
+    let mut toRevert := #[]
+    let instances ←  (← getLCtx).getFVarIds.filterM fun name => do pure (← name.getBinderInfo).isInstImplicit
+    for fvarId in (← getLCtx).getFVarIds do
+      unless (← fvarId.getDecl).isAuxDecl || (← instances.anyM fun inst => do localDeclDependsOn (← inst.getDecl) fvarId) || (instances.contains fvarId) do
+        toRevert := toRevert.push fvarId
+    pure toRevert
+  let (_, reverted) ← goal.revert toRevert
+  reverted.withContext do
+    let bij ← (destruct (← reverted.getType) `destruct).run (NameSet.ofArray premises)
+    let (mvars, _, goalBody) ← lambdaMetaTelescope bij.pack bij.unpack.size
+    reverted.assign goalBody
+    mvars.mapM fun mvar => do
+      let arities := bij.arities.getD []
+      mvar.mvarId!.introNP (arities.take toRevert.size).sum
+
 /--
 TODO:
--> What exactly is going on with destructTactic (why is output List (⋯ × MVarId)?)
 -> Obtain fun examples for paper?
 -/
 
@@ -158,7 +183,7 @@ structure Bundle (X : Type) (p : X → Prop) where
 
 theorem example_theorem : ∀ (n : Nat), n * n = 1 ↔ n = 1 := by sorry
 
-#eval show MetaM Unit from ReaderT.run (do
+#eval show MetaM Unit from ReaderT.run ((do
   -- Unit -> Nat -> Nat
   -- let t := Expr.forallE `n (Expr.const `Unit []) (Expr.forallE `m (Expr.const `Nat []) (Expr.const `Nat []) .default) .default
 
@@ -166,13 +191,17 @@ theorem example_theorem : ∀ (n : Nat), n * n = 1 ↔ n = 1 := by sorry
 
   -- let t := Expr.forallE `p p (mkAppN (Expr.const `Exists [1]) #[Expr.const `Nat [], Expr.bvar 0]) .default
 
+  let prod2 := mkAppN (Expr.const `Prod [0, 0]) #[mkConst `Nat, mkConst `Nat]
+  let prod3 := mkAppN (Expr.const `Prod [0, 0]) #[prod2, mkConst `Nat]
+  let t := Expr.forallE `x prod2 (Expr.forallE `y prod3 (mkConst `Nat) .default) .default
+
   -- (X : Type) → Bundle X (fun (x : X) → x = x)
   -- let t := Expr.forallE `X (Expr.sort 1) (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0, Expr.lam `x (Expr.bvar 0) (mkAppN (Expr.const `Eq [1]) #[Expr.bvar 1, Expr.bvar 0, Expr.bvar 0]) .default]) .default
 
   -- ∀ n : Nat, n * n = 1 ↔ n = 1
-  let t ← inferType (Expr.const ``example_theorem [])
+  -- let t ← inferType (Expr.const ``example_theorem [])
   let b ← destruct t `x
   IO.println $ ← b.pp
   IO.println $ ← check b.pack
   IO.println $ ← b.unpack.mapM (fun e => do check e)
-) (NameSet.ofArray #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array])
+) : DestructM Unit) (NameSet.ofArray #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array])
