@@ -5,7 +5,7 @@ public import Lean.Expr
 public import Lean.Meta.Basic
 public import Canonical.Destruct.Util
 
-open Lean Core Meta
+open Std Lean Core Meta
 
 namespace Destruct
 
@@ -29,12 +29,66 @@ noncomputable def translate_exists (α : Sort u) (p : α → Prop) : Translation
     fun e' => Exists.intro e'.value e'.proof
   ⟩
 
-def TRANSLATION_STRUCTURES := #[``Exists']
-def TRANSLATIONS : Array Name := #[``translate_exists]
+structure Unit' where
 
-def findTranslation (t : Expr) : MetaM (Option Name) := do
-  -- TODO: check if t matches some left-hand-side of any Translation stored
-  -- in TRANSLATIONS via syntactic matching
-  -- (also think about if there are any problems that could come up with def
-  -- equality)
-  return .none
+def translate_true : Translation True Unit' :=
+  ⟨fun _ => Unit'.mk, fun _ => True.intro⟩
+
+def translate_unit : Translation Unit Unit' :=
+  ⟨fun _ => Unit'.mk, fun _ => ()⟩
+
+def translate_punit : Translation PUnit Unit' :=
+  ⟨fun _ => Unit'.mk, fun _ => PUnit.unit⟩
+
+def TRANSLATION_STRUCTURES := #[``Exists', ``Unit']
+def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit]
+
+partial def syntacticMatch (raw : Expr) (pattern : Expr) : StateT (HashMap FVarId Expr) MetaM (Option Unit) := do
+  match (raw.consumeMData, pattern.consumeMData) with
+  | (Expr.const rawName rawLevels, Expr.const patName patLevels) => do
+    if rawName != patName then return .none
+    for (l, l') in (rawLevels.zip patLevels) do
+      -- Claim: This (hopefully) shouldn't be expensive since the left-hand-side
+      -- should be constant
+      if !(← isLevelDefEq l l') then return .none
+  | (_, Expr.fvar id) => do
+    let state ← get
+    if state.contains id then
+      if raw != state.get! id then return .none
+    else
+      set (state.insert id raw)
+  | (Expr.lam _ rawType rawBody rawInfo, Expr.lam _ patType patBody patInfo) => do
+    if rawInfo != patInfo then return .none
+    if (← syntacticMatch rawType patType).isNone then return .none
+    if (← syntacticMatch rawBody patBody).isNone then return .none
+  | (Expr.forallE _ rawType rawBody rawInfo, Expr.forallE _ patType patBody patInfo) => do
+    if rawInfo != patInfo then return .none
+    if (← syntacticMatch rawType patType).isNone then return .none
+    if (← syntacticMatch rawBody patBody).isNone then return .none
+  | (Expr.app rawFn rawArg, Expr.app patFn patArg) => do
+    if (← syntacticMatch rawFn patFn).isNone then return .none
+    if (← syntacticMatch rawArg patArg).isNone then return .none
+  | (Expr.sort rawLevel, Expr.sort patLevel) => do
+    -- Perhaps this should just be syntactic equality?
+    if !(← isLevelDefEq rawLevel patLevel) then return .none
+  | (Expr.proj rawName rawInd rawStruct, Expr.proj patName patInd patStruct) => do
+    if rawName != patName then return .none
+    if rawInd != patInd then return .none
+    if (← syntacticMatch rawStruct patStruct).isNone then return .none
+  | _ => if raw != pattern then return .none
+
+-- TODO: think through whether this is actually correct (worried a little about
+-- how levels are treated but hopefully this is okay)
+def findTranslation (t : Expr) : MetaM (Option (Expr × Expr)) := do
+  TRANSLATIONS.findSomeM? fun name => do
+    let head ← mkConstWithFreshMVarLevels name
+    let type ← inferType head
+    forallTelescope type fun fvars translation => do
+      let pattern := translation.getAppArgs[0]!
+      let replace := translation.getAppArgs[1]!
+      if let (.some _, map) ← (syntacticMatch t pattern).run (HashMap.emptyWithCapacity fvars.size) then
+        let assignments := fvars.map (map.get! ·.fvarId!)
+        let replaced := replace.replaceFVars fvars assignments
+        let translated := mkAppN head assignments
+        return .some (replaced, translated)
+      return .none

@@ -62,3 +62,10 @@ partial def packTelescope (bijs : Array Bijection) (fvars : Array Expr) (k : Arr
     lambdaBoundedTelescope pack b.unpack.size fun vars packed => do
       recurse (i + 1) (varBlocks.push vars) (packedBlocks.push packed) k
   recurse 0 #[] #[] k
+
+def getStruct (name : Name) : MetaM (Option Name) := do
+  let env ← getEnv
+  if let some (.ctorInfo info) := env.find? name then
+    if isStructure env info.name then
+      return info.name
+  return env.getProjectionStructureName? name

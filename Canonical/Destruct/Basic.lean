@@ -24,31 +24,30 @@ def destructTrivial (t : Expr) (binderName : Name) : DestructM Bijection := do
   let id := Expr.lam binderName t (Expr.bvar 0) .default
   return ⟨id, #[id], .none⟩
 
-def destructAdhoc (t : Expr) (binderName : Name) : DestructM Bijection := do
-  if let .some translation ← findTranslation t then
-    -- TODO: obtain the right-hand-side of the translation and destruct.
-    -- Use this Bijection and the translation to compute the resulting Bijection
-    -- via composition (potentially might be more ergonomic to make
-    -- findTranslation take a continuation)
-    return ← destructTrivial t binderName
-  destructTrivial t binderName
-  -- if headName == ``True then
-  --   return ⟨Expr.const ``True.intro [], #[], .none⟩
-  -- else if headName == ``Unit then
-  --   return ⟨Expr.const ``Unit.unit [], #[], .none⟩
-  -- else if headName == ``PUnit then
-  --   return ⟨Expr.const ``PUnit.unit fn.constLevels!, #[], .none⟩
-  -- TODO: Handle single constructor inductives like Exists correctly
-
 mutual
+partial def destructAdhoc (t : Expr) (binderName : Name) : DestructM Bijection := do
+  if let .some (translated, translation) ← findTranslation t then
+    let bij ← destructMain translated binderName
+    -- Compute pack as (translation.g ∘ bij.pack)
+    -- and unpack as (bij.unpack ∘ translation.f)
+    let pack ← lambdaBoundedTelescope bij.pack bij.unpack.size fun fvars packed => do
+      let g := Expr.proj ``Translation 1 translation
+      mkLambdaFVars fvars (Expr.app g packed)
+    let unpack ← bij.unpack.mapM fun un => do
+      withLocalDecl binderName .default t fun fvar => do
+        let f := Expr.proj ``Translation 0 translation
+        mkLambdaFVars #[fvar] (apply un (Expr.app f fvar))
+    return ⟨pack, unpack, .none⟩
+  destructTrivial t binderName
+
 partial def destructStruct (t : Expr) (binderName : Name)
   (structName : Name) (numFields : Nat) (builtinCtor : Expr) : DestructM Bijection := do
   lambdaBoundedTelescope builtinCtor numFields fun fvars packed => do
     let lctx ← getLCtx
     let fvarInfo := fvars.map fun fvar => lctx.get! fvar.fvarId!
     let types := fvarInfo.map (·.type)
-    let names := fvarInfo.map (·.userName)
-    let bijs ← (types.zip names).mapM fun (type, name) => destructMain type name
+    let names := fvarInfo.map (binderName.toString ++ "_" ++ ·.userName.toString)
+    let bijs ← (types.zip names).mapM fun (type, name) => destructMain type name.toName
 
     let pack ← packTelescope bijs fvars fun varBlocks packedBlocks => do
       mkLambdaFVars varBlocks.flatten (packed.replaceFVars fvars packedBlocks)
@@ -65,6 +64,7 @@ partial def destructStruct (t : Expr) (binderName : Name)
 
     return ⟨pack, unpack, .none⟩
 
+-- TODO: Update calls to separatePi throughout the codebase?
 partial def destructPi (t : Expr) (binderName : Name)
   (inputName : Name) (inputType : Expr) (outputType : Expr) (inputInfo : BinderInfo) : DestructM Bijection := do
   let input ← destructMain inputType inputName
@@ -100,6 +100,13 @@ partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs
   destructAdhoc t binderName
 
 partial def destructMain (t : Expr) (binderName : Name) : DestructM Bijection := do
+  -- TODO: is this the right thing to do? It's quite often that `t` will be of the
+  -- form `(fun x => f x) y`. Consider a case like `∃ (x : X), f x`, which is
+  -- really `Exists X (fun x => f x)`. When we destruct this, it'll look like
+  -- `{ value : X, proof : (fun x => f x) value }`, and it won't get destructed.
+  -- We really would like to see the head symbol `f`. Of course, `whnf` is too
+  -- much, but maybe `headBeta` is okay?
+  let t := t.headBeta
   if t.isForall then
     destructPi t binderName t.bindingName! t.bindingDomain! t.bindingBody! t.bindingInfo!
   else if t.isConst || t.isApp then
@@ -120,18 +127,15 @@ partial def destructTactic (goal : MVarId) (premises : Array Name) : MetaM (Arra
   let (_, reverted) ← goal.revert toRevert
   reverted.withContext do
     let bij ← (destructMain (← reverted.getType) `destruct).run (NameSet.ofArray premises)
+    -- Note: lambdaMetaTelescope doesn't preserve names, so we have to add back
+    -- the names
+    let binderNames := ((lambdaBinders bij.pack bij.unpack.size).map (·.1)).toArray
     let (mvars, _, goalBody) ← lambdaMetaTelescope bij.pack bij.unpack.size
     reverted.assign goalBody
-    mvars.mapM fun mvar => do
+    (mvars.zip binderNames).mapM fun (mvar, name) => do
       let arities := bij.arities.getD []
+      mvar.mvarId!.setUserName name
       mvar.mvarId!.introNP (arities.take toRevert.size).sum
-
-def getStruct (name : Name) : MetaM (Option Name) := do
-  let env ← getEnv
-  if let some (.ctorInfo info) := env.find? name then
-    if isStructure env info.name then
-      return info.name
-  return env.getProjectionStructureName? name
 
 def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (Expr → MetaM Expr)) := do
   let env ← getEnv
@@ -153,10 +157,6 @@ def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (E
 
 /--
 TODO:
--> Maybe we can get rid of destructAdhoc by implementing like isomorphisms as
-   Lean theorems (something like Isomorphism A B), where A is the thing you want
-   to translate and B is the user object. This way, we can have a lookup table
-   for things
 -> Obtain fun examples for paper? Was trying to get a problem solved that uses
   destruct very heavily
   Examples (motivation: destruct is needed because otherwise you could blow up search space

@@ -1,5 +1,6 @@
 module
 
+import Lean
 public import Lean.Elab.Tactic.Basic
 public meta import Canonical.Destruct.Basic
 
@@ -21,3 +22,10 @@ syntax (name := destruct) "destruct " ("[" ident,* "]")? : tactic
     let destruct ← destructTactic x STRUCTURES
     pure (destruct.map (·.2)).toList
 | _ => throwUnsupportedSyntax
+
+-- example : ∃ (t : Type 10), True := by
+--   destruct
+--   · exact Type 9
+--
+-- example : ∃ (t : Unit), True := by
+--   destruct
