@@ -18,6 +18,9 @@ structure Translation (A : Sort u) (B : Sort v) where
   f : A → B
   g : B → A
 
+def iff_to_translation (h : A ↔ B) : Translation A B :=
+  ⟨h.mp, h.mpr⟩
+
 -- Example translations:
 structure Exists' (α : Sort u) (p : α → Prop) where
   value : α
@@ -40,8 +43,16 @@ def translate_unit : Translation Unit Unit' :=
 def translate_punit : Translation PUnit Unit' :=
   ⟨fun _ => Unit'.mk, fun _ => PUnit.unit⟩
 
+-- Is this useful at all? x ≥ y is an abbreviation for y ≤ x anyway.
+def translate_le {α} [LE α] (x : α) (y : α) : Translation (x ≥ y) (y ≤ x) :=
+  ⟨fun a => a, fun a => a⟩
+
+-- Ideas:
+-- Perhaps mapping x^2 to x * x?
+-- x % 2 = 0 to Even x
+
 def TRANSLATION_STRUCTURES := #[``Exists', ``Unit']
-def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit]
+def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit, ``translate_le]
 
 partial def syntacticMatch (raw : Expr) (pattern : Expr) : StateT (HashMap FVarId Expr) MetaM (Option Unit) := do
   match (raw.consumeMData, pattern.consumeMData) with
@@ -49,7 +60,7 @@ partial def syntacticMatch (raw : Expr) (pattern : Expr) : StateT (HashMap FVarI
     if rawName != patName then return .none
     for (l, l') in (rawLevels.zip patLevels) do
       -- Claim: This (hopefully) shouldn't be expensive since the left-hand-side
-      -- should be constant
+      -- levels should be concrete, constant values
       if !(← isLevelDefEq l l') then return .none
   | (_, Expr.fvar id) => do
     let state ← get
