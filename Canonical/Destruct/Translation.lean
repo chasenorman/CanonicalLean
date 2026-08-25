@@ -43,63 +43,29 @@ def translate_unit : Translation Unit Unit' :=
 def translate_punit : Translation PUnit Unit' :=
   ⟨fun _ => Unit'.mk, fun _ => PUnit.unit⟩
 
--- Is this useful at all? x ≥ y is an abbreviation for y ≤ x anyway.
-def translate_le {α} [LE α] (x : α) (y : α) : Translation (x ≥ y) (y ≤ x) :=
+def translate_ge {α} [LE α] (x : α) (y : α) : Translation (y ≥ x) (x ≤ y) :=
   ⟨fun a => a, fun a => a⟩
 
 -- Ideas:
+-- x ∈ A ∩ B ↔ x ∈ A ∧ x ∈ B (same thing for ∨ and \ operators)
+-- Maybe also set equality via double containment
+-- Also like ⊇
 -- Perhaps mapping x^2 to x * x?
 -- x % 2 = 0 to Even x
 
 def TRANSLATION_STRUCTURES := #[``Exists', ``Unit']
-def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit, ``translate_le]
+def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit, ``translate_ge]
 
-partial def syntacticMatch (raw : Expr) (pattern : Expr) : StateT (HashMap FVarId Expr) MetaM (Option Unit) := do
-  match (raw.consumeMData, pattern.consumeMData) with
-  | (Expr.const rawName rawLevels, Expr.const patName patLevels) => do
-    if rawName != patName then return .none
-    for (l, l') in (rawLevels.zip patLevels) do
-      -- Claim: This (hopefully) shouldn't be expensive since the left-hand-side
-      -- levels should be concrete, constant values
-      if !(← isLevelDefEq l l') then return .none
-  | (_, Expr.fvar id) => do
-    let state ← get
-    if state.contains id then
-      if raw != state.get! id then return .none
-    else
-      set (state.insert id raw)
-  | (Expr.lam _ rawType rawBody rawInfo, Expr.lam _ patType patBody patInfo) => do
-    if rawInfo != patInfo then return .none
-    if (← syntacticMatch rawType patType).isNone then return .none
-    if (← syntacticMatch rawBody patBody).isNone then return .none
-  | (Expr.forallE _ rawType rawBody rawInfo, Expr.forallE _ patType patBody patInfo) => do
-    if rawInfo != patInfo then return .none
-    if (← syntacticMatch rawType patType).isNone then return .none
-    if (← syntacticMatch rawBody patBody).isNone then return .none
-  | (Expr.app rawFn rawArg, Expr.app patFn patArg) => do
-    if (← syntacticMatch rawFn patFn).isNone then return .none
-    if (← syntacticMatch rawArg patArg).isNone then return .none
-  | (Expr.sort rawLevel, Expr.sort patLevel) => do
-    -- Perhaps this should just be syntactic equality?
-    if !(← isLevelDefEq rawLevel patLevel) then return .none
-  | (Expr.proj rawName rawInd rawStruct, Expr.proj patName patInd patStruct) => do
-    if rawName != patName then return .none
-    if rawInd != patInd then return .none
-    if (← syntacticMatch rawStruct patStruct).isNone then return .none
-  | _ => if raw != pattern then return .none
-
--- TODO: think through whether this is actually correct (worried a little about
--- how levels are treated but hopefully this is okay)
 def findTranslation (t : Expr) : MetaM (Option (Expr × Expr)) := do
+  withTransparency .none do
   TRANSLATIONS.findSomeM? fun name => do
     let head ← mkConstWithFreshMVarLevels name
     let type ← inferType head
-    forallTelescope type fun fvars translation => do
-      let pattern := translation.getAppArgs[0]!
-      let replace := translation.getAppArgs[1]!
-      if let (.some _, map) ← (syntacticMatch t pattern).run (HashMap.emptyWithCapacity fvars.size) then
-        let assignments := fvars.map (map.get! ·.fvarId!)
-        let replaced := replace.replaceFVars fvars assignments
-        let translated := mkAppN head assignments
-        return .some (replaced, translated)
-      return .none
+    let (mvars, _, translation) ← forallMetaTelescope type
+    let pattern := translation.getAppArgs[0]!
+    let replace := translation.getAppArgs[1]!
+    if (← isDefEq t pattern) then
+      let replaced ← instantiateMVars replace
+      let translated ← instantiateMVars (mkAppN head mvars)
+      return .some (replaced, translated)
+    return .none
