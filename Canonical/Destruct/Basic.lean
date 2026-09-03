@@ -170,25 +170,25 @@ structure Bundle (X : Type) (p : X → Prop) where
   value : X
   proof : p value
 
-#eval show MetaM Unit from ReaderT.run ((do
-  -- Unit -> Nat -> Nat
-  -- let t := Expr.forallE `n (Expr.const `Unit []) (Expr.forallE `m (Expr.const `Nat []) (Expr.const `Nat []) .default) .default
-
-  -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.const `Nat []) .default
-
-  -- let t := Expr.forallE `p p (mkAppN (Expr.const `Exists [1]) #[Expr.const `Nat [], Expr.bvar 0]) .default
-
-  let prod2 := mkAppN (Expr.const `Prod [0, 0]) #[mkConst `Nat, mkConst `Nat]
-  let prod3 := mkAppN (Expr.const `Prod [0, 0]) #[prod2, mkConst `Nat]
-  let t := Expr.forallE `x prod2 (Expr.forallE `y prod3 (mkConst `Nat) .default) .default
-
-  -- (X : Type) → Bundle X (fun (x : X) → x = x)
-  -- let t := Expr.forallE `X (Expr.sort 1) (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0, Expr.lam `x (Expr.bvar 0) (mkAppN (Expr.const `Eq [1]) #[Expr.bvar 1, Expr.bvar 0, Expr.bvar 0]) .default]) .default
-
-  -- ∀ n : Nat, n * n = 1 ↔ n = 1
-  -- let t ← inferType (Expr.const ``example_theorem [])
-  let b ← destructMain t `x
-  IO.println $ ← b.pp
-  IO.println $ ← check b.pack
-  IO.println $ ← b.unpack.mapM (fun e => do check e)
-) : DestructM Unit) (NameSet.ofArray #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array])
+-- #eval show MetaM Unit from ReaderT.run ((do
+--   -- Unit -> Nat -> Nat
+--   -- let t := Expr.forallE `n (Expr.const `Unit []) (Expr.forallE `m (Expr.const `Nat []) (Expr.const `Nat []) .default) .default
+--
+--   -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.const `Nat []) .default
+--
+--   -- let t := Expr.forallE `p p (mkAppN (Expr.const `Exists [1]) #[Expr.const `Nat [], Expr.bvar 0]) .default
+--
+--   let prod2 := mkAppN (Expr.const `Prod [0, 0]) #[mkConst `Nat, mkConst `Nat]
+--   let prod3 := mkAppN (Expr.const `Prod [0, 0]) #[prod2, mkConst `Nat]
+--   let t := Expr.forallE `x prod2 (Expr.forallE `y prod3 (mkConst `Nat) .default) .default
+--
+--   -- (X : Type) → Bundle X (fun (x : X) → x = x)
+--   -- let t := Expr.forallE `X (Expr.sort 1) (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0, Expr.lam `x (Expr.bvar 0) (mkAppN (Expr.const `Eq [1]) #[Expr.bvar 1, Expr.bvar 0, Expr.bvar 0]) .default]) .default
+--
+--   -- ∀ n : Nat, n * n = 1 ↔ n = 1
+--   -- let t ← inferType (Expr.const ``example_theorem [])
+--   let b ← destructMain t `x
+--   IO.println $ ← b.pp
+--   IO.println $ ← check b.pack
+--   IO.println $ ← b.unpack.mapM (fun e => do check e)
+-- ) : DestructM Unit) (NameSet.ofArray #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array])
