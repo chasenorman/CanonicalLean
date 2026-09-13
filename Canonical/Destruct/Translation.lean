@@ -46,12 +46,16 @@ def translate_punit : Translation PUnit Unit' :=
 def translate_ge {α} [LE α] (x : α) (y : α) : Translation (y ≥ x) (x ≤ y) :=
   ⟨fun a => a, fun a => a⟩
 
+-- def translate_decidable (p : Prop) [h : Decidable p] : Translation p (decide p)
+
 -- Ideas:
 -- x ∈ A ∩ B ↔ x ∈ A ∧ x ∈ B (same thing for ∨ and \ operators)
 -- Maybe also set equality via double containment
 -- Also like ⊇
 -- Perhaps mapping x^2 to x * x?
 -- x % 2 = 0 to Even x
+-- Look at ext tactic hmmm. This is actually a very cool idea instead of proving
+-- like structures are equal we can prove their fields are equal.
 
 def TRANSLATION_STRUCTURES := #[``Exists', ``Unit']
 def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit, ``translate_ge]

@@ -88,14 +88,21 @@ partial def destructPi (t : Expr) (binderName : Name)
 partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs : Array Expr) : DestructM Bijection := do
   if headFn.constName?.isNone then return ← destructTrivial t binderName
   let headName := headFn.constName!
+  let env ← getEnv
 
+  -- TODO: should we destruct the arguments here? A case where this is relevant
+  -- is something like Eq Nat ((fun x => x * 2) 3) 6 where the main (very
+  -- natural) simplification comes from the beta reduction (destruct called
+  -- recursively essentially beta reduces the expression recursively becaues of
+  -- the headBeta). Otherwise, whether the arguments get destructed here depend
+  -- purely upon whether they match some translation in destructAdhoc
   if (← read).contains headName then
-    let info := getStructureInfo (← getEnv) headName
-    let fields := info.fieldNames.size
-    let headLevels := headFn.constLevels!
-    let induct ← getConstInfoInduct headName
-    let ctor ← etaExpand (Expr.const induct.ctors[0]! headLevels)
-    return ← destructStruct t binderName headName fields (applyN ctor headArgs)
+    if let .some info := getStructureInfo? env headName then
+      let fields := info.fieldNames.size
+      let headLevels := headFn.constLevels!
+      let induct ← getConstInfoInduct headName
+      let ctor ← etaExpand (Expr.const induct.ctors[0]! headLevels)
+      return ← destructStruct t binderName headName fields (applyN ctor headArgs)
 
   destructAdhoc t binderName
 
@@ -144,7 +151,6 @@ def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (E
   let goal := (← mkFreshExprMVar (← goal.getType)).mvarId!
   goal.withContext do
     let typ ← goal.getType
-    -- let level ← getLevel typ
     let dneg := (env.find? ``Canonical.dneg).get!.value!
     let next := (← goal.apply (Canonical.apply dneg [typ]))[0]!
     let destruct ← destructTactic next (STRUCTURES ++ names ++ consts)
@@ -154,41 +160,3 @@ def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (E
     let assignment ← betaReduce assignment
     return (result.2, fun x => do
       betaReduce (Canonical.apply assignment [← mkLambdaFVars (result.1.map .fvar) x]))
-
-/--
-TODO:
--> Obtain fun examples for paper? Was trying to get a problem solved that uses
-  destruct very heavily
-  Examples (motivation: destruct is needed because otherwise you could blow up search space
-  (A and B).left, pairs etc. don't really matter for solving the problem
-  anyway):
-  - https://leanprover.zulipchat.com/#narrow/channel/113488-general/topic/Canonical/near/538228811
-  - https://leanprover.zulipchat.com/#narrow/channel/239415-metaprogramming-.2F-tactics/topic/Destruct.20Tactic/near/538032110
--/
-
-structure Bundle (X : Type) (p : X → Prop) where
-  value : X
-  proof : p value
-
--- #eval show MetaM Unit from ReaderT.run ((do
---   -- Unit -> Nat -> Nat
---   -- let t := Expr.forallE `n (Expr.const `Unit []) (Expr.forallE `m (Expr.const `Nat []) (Expr.const `Nat []) .default) .default
---
---   -- let t := Expr.forallE `n (Expr.const `Nat []) (Expr.const `Nat []) .default
---
---   -- let t := Expr.forallE `p p (mkAppN (Expr.const `Exists [1]) #[Expr.const `Nat [], Expr.bvar 0]) .default
---
---   let prod2 := mkAppN (Expr.const `Prod [0, 0]) #[mkConst `Nat, mkConst `Nat]
---   let prod3 := mkAppN (Expr.const `Prod [0, 0]) #[prod2, mkConst `Nat]
---   let t := Expr.forallE `x prod2 (Expr.forallE `y prod3 (mkConst `Nat) .default) .default
---
---   -- (X : Type) → Bundle X (fun (x : X) → x = x)
---   -- let t := Expr.forallE `X (Expr.sort 1) (mkAppN (Expr.const ``Bundle []) #[Expr.bvar 0, Expr.lam `x (Expr.bvar 0) (mkAppN (Expr.const `Eq [1]) #[Expr.bvar 1, Expr.bvar 0, Expr.bvar 0]) .default]) .default
---
---   -- ∀ n : Nat, n * n = 1 ↔ n = 1
---   -- let t ← inferType (Expr.const ``example_theorem [])
---   let b ← destructMain t `x
---   IO.println $ ← b.pp
---   IO.println $ ← check b.pack
---   IO.println $ ← b.unpack.mapM (fun e => do check e)
--- ) : DestructM Unit) (NameSet.ofArray #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array])
