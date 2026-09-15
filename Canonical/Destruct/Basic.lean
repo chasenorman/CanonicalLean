@@ -26,7 +26,7 @@ def destructTrivial (t : Expr) (binderName : Name) : DestructM Bijection := do
 
 mutual
 partial def destructAdhoc (t : Expr) (binderName : Name) : DestructM Bijection := do
-  if let .some (translated, translation) ← findTranslation t then
+  if let .some (translated, translation) ← matchTranslation t then
     let bij ← destructMain translated binderName
     -- Compute pack as (translation.g ∘ bij.pack)
     -- and unpack as (bij.unpack ∘ translation.f)
@@ -64,7 +64,6 @@ partial def destructStruct (t : Expr) (binderName : Name)
 
     return ⟨pack, unpack, .none⟩
 
--- TODO: Update calls to separatePi throughout the codebase?
 partial def destructPi (t : Expr) (binderName : Name)
   (inputName : Name) (inputType : Expr) (outputType : Expr) (inputInfo : BinderInfo) : DestructM Bijection := do
   let input ← destructMain inputType inputName
@@ -96,6 +95,7 @@ partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs
   -- recursively essentially beta reduces the expression recursively becaues of
   -- the headBeta). Otherwise, whether the arguments get destructed here depend
   -- purely upon whether they match some translation in destructAdhoc
+  -- Actually hmmm I'm not fully convinced that we should do what the above says.
   if (← read).contains headName then
     if let .some info := getStructureInfo? env headName then
       let fields := info.fieldNames.size
@@ -113,7 +113,7 @@ partial def destructMain (t : Expr) (binderName : Name) : DestructM Bijection :=
   -- `{ value : X, proof : (fun x => f x) value }`, and it won't get destructed.
   -- We really would like to see the head symbol `f`. Of course, `whnf` is too
   -- much, but maybe `headBeta` is okay?
-  let t := t.headBeta
+  let t := t.consumeMData.headBeta
   if t.isForall then
     destructPi t binderName t.bindingName! t.bindingDomain! t.bindingBody! t.bindingInfo!
   else if t.isConst || t.isApp then

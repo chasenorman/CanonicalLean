@@ -2,6 +2,7 @@ module
 
 import Lean
 public import Lean.Expr
+public import Lean.Meta.Tactic.Ext
 public import Lean.Meta.Basic
 public import Canonical.Destruct.Util
 
@@ -46,22 +47,54 @@ def translate_punit : Translation PUnit Unit' :=
 def translate_ge {α} [LE α] (x : α) (y : α) : Translation (y ≥ x) (x ≤ y) :=
   ⟨fun a => a, fun a => a⟩
 
+-- Should we unfold Not?
+def translate_ne {α} (x : α) (y : α) : Translation (x ≠ y) (¬(x = y)) :=
+  ⟨fun a => a, fun a => a⟩
+
 -- def translate_decidable (p : Prop) [h : Decidable p] : Translation p (decide p)
 
 -- Ideas:
 -- x ∈ A ∩ B ↔ x ∈ A ∧ x ∈ B (same thing for ∨ and \ operators)
 -- Maybe also set equality via double containment
 -- Also like ⊇
--- Perhaps mapping x^2 to x * x?
--- x % 2 = 0 to Even x
--- Look at ext tactic hmmm. This is actually a very cool idea instead of proving
--- like structures are equal we can prove their fields are equal.
 
+-- Remember to update these after defining a new translation!
 def TRANSLATION_STRUCTURES := #[``Exists', ``Unit']
-def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit, ``translate_ge]
+def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit, ``translate_ge, ``translate_ne]
 
-def findTranslation (t : Expr) : MetaM (Option (Expr × Expr)) := do
+def matchExt (t : Expr) : MetaM (Option (Expr × Expr)) := do
+  let head := t.getAppFn
+  let args := t.getAppArgs
+  let env ← getEnv
+
+  if head.constName != `Eq then return .none
+  if args.size != 3 then return .none
+
+  let t' := args[0]!.headBeta
+  let extTheorems ← Ext.getExtTheorems t'
+  for extTheorem in extTheorems do
+    -- I believe this is how ext generates ext_iff theorems so we should be fine
+    -- to do this.
+    let iffName := (extTheorem.declName.toString ++ "_iff").toName
+    if !(env.contains iffName) then continue
+    let iffTheorem ← mkConstWithFreshMVarLevels iffName
+    let iffType ← inferType iffTheorem
+    let (mvars, _, iff) ← forallMetaTelescope iffType
+    let pattern := iff.getAppArgs[0]!
+    let replace := iff.getAppArgs[1]!
+    if (← isDefEq t pattern) then do
+      let pattern ← instantiateMVars pattern
+      let replace ← instantiateMVars replace
+      let iffTheorem ← instantiateMVars (mkAppN iffTheorem mvars)
+      let translation := mkAppN (Expr.const ``iff_to_translation []) #[pattern, replace, iffTheorem]
+      return .some (replace, translation)
+  return .none
+
+-- Returns the replaced expression as well as the Translation.
+def matchTranslation (t : Expr) : MetaM (Option (Expr × Expr)) := do
   withTransparency .none do
+  if let .some (replaced, translation) ← matchExt t then
+    return .some (replaced, translation)
   TRANSLATIONS.findSomeM? fun name => do
     let head ← mkConstWithFreshMVarLevels name
     let type ← inferType head
