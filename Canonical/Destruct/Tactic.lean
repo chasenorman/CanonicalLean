@@ -23,16 +23,6 @@ syntax (name := destruct) "destruct " ("[" ident,* "]")? : tactic
     pure (destruct.map (·.2)).toList
 | _ => throwUnsupportedSyntax
 
--- example : ∃ (t : Type 10), True := by
---   destruct
---   · exact Type 9
---
--- example : ∃ (t : Unit), True := by
---   destruct
-
-example : (fun x y => (x * y, y)) 2 3 = (6, 3) := by
-  destruct
-
 -- Paper structure:
 -- - Proving correctness
 -- - Analogy to compilers (treating structures with stack indices? hmm)
