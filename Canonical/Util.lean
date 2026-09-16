@@ -95,7 +95,7 @@ variable [MonadControlT MetaM n] [Monad n]
   withReducibleAndInstances (withCanUnfoldPred (canUnfold monomorphize) e)
 
 def withNoUnfoldPred [MonadControlT MetaM m] [Monad m] : m α → m α :=
-  mapMetaM <| withReader (fun ctx => { ctx with canUnfold? := none })
+  mapMetaM <| withReader (fun ctx => { ctx with customCanUnfoldPredicate? := none })
 
 def withoutArityUnfold [MonadControlT MetaM m] [Monad m] (x : m α) : m α :=
   withDefault do withNoUnfoldPred do x

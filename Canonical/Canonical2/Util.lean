@@ -101,3 +101,20 @@ def roundtrip (opts : Options) : Options := opts |>
 def elabStringAsExpr (str : String) (type : Option Expr := none) : MetaM Expr := do
   let stx ← IO.ofExcept (Parser.runParserCategory (← getEnv) `term str)
   TermElabM.run' do withoutErrToSorry do elabTermAndSynthesize stx type
+
+private def homeDir : IO System.FilePath := do
+  let h := (← IO.getEnv "HOME").getD ""
+  if !h.isEmpty then return ⟨h⟩
+  match ← IO.getEnv "USERPROFILE" with
+  | some h => return ⟨h⟩
+  | none   => throw <| IO.userError "HOME is not set"
+
+def cacheDir : IO System.FilePath := do
+  if System.Platform.isWindows then
+    match ← IO.getEnv "LOCALAPPDATA" with
+    | some d => return (d : System.FilePath) / "Canonical"
+    | none   => throw <| IO.userError "LOCALAPPDATA is not set"
+  else if System.Platform.isOSX then
+    return (← homeDir) / "Library" / "Caches" / "Canonical"
+  else
+    return (← homeDir) / ".cache" / "Canonical"
