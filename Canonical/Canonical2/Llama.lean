@@ -194,7 +194,7 @@ private def ensureCache (db : FilePath) : IO Unit := do
     let installed ← try pure (← IO.FS.readFile marker).trimAscii.toString catch _ => pure ""
     if installed == cacheRelease && (← db.pathExists) then return
     if ← downloadCache log db "premise.db" then IO.FS.writeFile marker s!"{cacheRelease}\n"
-  else if !(← db.pathExists) then
+  if !(← db.pathExists) then
     let _ ← downloadCache log db "lean.db"
 
 def startPremiseDaemon (prebuilt := true) : IO Unit := do
