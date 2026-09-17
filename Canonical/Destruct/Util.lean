@@ -20,7 +20,6 @@ structure Bijection where
   pack : Expr
   unpack : Array Expr
 
-  -- TODO: Find a better place to put this
   -- Specifically for destructTactic to determine the unpacked arities of
   -- functions
   arities : Option (List Nat)
