@@ -28,8 +28,6 @@ mutual
 partial def destructAdhoc (t : Expr) (binderName : Name) : DestructM Bijection := do
   if let .some (translated, translation) ← matchTranslation t then
     let bij ← destructMain translated binderName
-    -- Compute pack as (translation.g ∘ bij.pack)
-    -- and unpack as (bij.unpack ∘ translation.f)
     let pack ← lambdaBoundedTelescope bij.pack bij.unpack.size fun fvars packed => do
       let g := Expr.proj ``Translation 1 translation
       mkLambdaFVars fvars (Expr.app g packed)
@@ -56,8 +54,6 @@ partial def destructStruct (t : Expr) (binderName : Name)
       let projs := (Array.range numFields).map (Expr.proj structName · fvar)
       let unpacks ← (bijs.zip projs).mapM fun (b, proj) => do
         b.unpack.mapM fun lam => do
-          -- TODO: is this line actually needed? Is there a situation in which
-          -- the body of an unpack can contain free variables from `fvars`?
           let lam' := lam.replaceFVars fvars projs
           mkLambdaFVars #[fvar] (apply lam' proj)
       return unpacks.flatten
@@ -68,7 +64,7 @@ partial def destructPi (t : Expr) (binderName : Name)
   (inputName : Name) (inputType : Expr) (outputType : Expr) (inputInfo : BinderInfo) : DestructM Bijection := do
   let input ← destructMain inputType inputName
   lambdaBoundedTelescope input.pack input.unpack.size fun vars packed => do
-    -- TODO: Is binderName the correct thing to put here? (I think not)
+    -- TODO: Is binderName the correct thing to put here?
     let output ← destructMain (outputType.instantiate1 packed) binderName
 
     let unpack ← withLocalDecl binderName .default t fun f => do
@@ -89,13 +85,6 @@ partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs
   let headName := headFn.constName!
   let env ← getEnv
 
-  -- TODO: should we destruct the arguments here? A case where this is relevant
-  -- is something like Eq Nat ((fun x => x * 2) 3) 6 where the main (very
-  -- natural) simplification comes from the beta reduction (destruct called
-  -- recursively essentially beta reduces the expression recursively becaues of
-  -- the headBeta). Otherwise, whether the arguments get destructed here depend
-  -- purely upon whether they match some translation in destructAdhoc
-  -- Actually hmmm I'm not fully convinced that we should do what the above says.
   if (← read).contains headName then
     if let .some info := getStructureInfo? env headName then
       let fields := info.fieldNames.size
@@ -107,12 +96,6 @@ partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs
   destructAdhoc t binderName
 
 partial def destructMain (t : Expr) (binderName : Name) : DestructM Bijection := do
-  -- TODO: is this the right thing to do? It's quite often that `t` will be of the
-  -- form `(fun x => f x) y`. Consider a case like `∃ (x : X), f x`, which is
-  -- really `Exists X (fun x => f x)`. When we destruct this, it'll look like
-  -- `{ value : X, proof : (fun x => f x) value }`, and it won't get destructed.
-  -- We really would like to see the head symbol `f`. Of course, `whnf` is too
-  -- much, but maybe `headBeta` is okay?
   let t := t.consumeMData.headBeta
   if t.isForall then
     destructPi t binderName t.bindingName! t.bindingDomain! t.bindingBody! t.bindingInfo!

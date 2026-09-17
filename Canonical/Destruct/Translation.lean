@@ -13,7 +13,7 @@ namespace Destruct
 public section
 
 /-- Forward and backwards maps between instances of `A` and `B`, where `A` is a
-    sort appearing in a goal that we wish to replace with `B`.
+    sort appearing in a premise or goal that we wish to replace with `B`.
 -/
 structure Translation (A : Sort u) (B : Sort v) where
   f : A → B
@@ -22,7 +22,6 @@ structure Translation (A : Sort u) (B : Sort v) where
 def iff_to_translation (h : A ↔ B) : Translation A B :=
   ⟨h.mp, h.mpr⟩
 
--- Example translations:
 structure Exists' (α : Sort u) (p : α → Prop) where
   value : α
   proof : p value
@@ -47,54 +46,55 @@ def translate_punit : Translation PUnit Unit' :=
 def translate_ge {α} [LE α] (x : α) (y : α) : Translation (y ≥ x) (x ≤ y) :=
   ⟨fun a => a, fun a => a⟩
 
--- Should we unfold Not?
 def translate_ne {α} (x : α) (y : α) : Translation (x ≠ y) (¬(x = y)) :=
   ⟨fun a => a, fun a => a⟩
 
--- def translate_decidable (p : Prop) [h : Decidable p] : Translation p (decide p)
-
 -- Ideas:
 -- x ∈ A ∩ B ↔ x ∈ A ∧ x ∈ B (same thing for ∨ and \ operators)
--- Maybe also set equality via double containment
--- Also like ⊇
+-- Set equality via double containment (actually this is provided by ext)
+-- Unfolding the subseteq definition
+-- Translating decidable propositions?
 
 -- Remember to update these after defining a new translation!
 def TRANSLATION_STRUCTURES := #[``Exists', ``Unit']
 def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit, ``translate_ge, ``translate_ne]
 
-def matchExt (t : Expr) : MetaM (Option (Expr × Expr)) := do
-  let head := t.getAppFn
-  let args := t.getAppArgs
-  let env ← getEnv
+-- NOTE: This will run into infinite translation loops unless a depth condition
+-- is added
 
-  if head.constName != `Eq then return .none
-  if args.size != 3 then return .none
-
-  let t' := args[0]!.headBeta
-  let extTheorems ← Ext.getExtTheorems t'
-  for extTheorem in extTheorems do
-    -- I believe this is how ext generates ext_iff theorems so we should be fine
-    -- to do this.
-    let iffName := (extTheorem.declName.toString ++ "_iff").toName
-    if !(env.contains iffName) then continue
-    let iffTheorem ← mkConstWithFreshMVarLevels iffName
-    let iffType ← inferType iffTheorem
-    let (mvars, _, iff) ← forallMetaTelescope iffType
-    let pattern := iff.getAppArgs[0]!
-    let replace := iff.getAppArgs[1]!
-    if (← isDefEq t pattern) then do
-      let pattern ← instantiateMVars pattern
-      let replace ← instantiateMVars replace
-      let iffTheorem ← instantiateMVars (mkAppN iffTheorem mvars)
-      let translation := mkAppN (Expr.const ``iff_to_translation []) #[pattern, replace, iffTheorem]
-      return .some (replace, translation)
-  return .none
+-- def matchExt (t : Expr) : MetaM (Option (Expr × Expr)) := do
+--   let head := t.getAppFn
+--   let args := t.getAppArgs
+--   let env ← getEnv
+--
+--   if head.constName != `Eq then return .none
+--   if args.size != 3 then return .none
+--
+--   let t' := args[0]!.headBeta
+--   let extTheorems ← Ext.getExtTheorems t'
+--   for extTheorem in extTheorems do
+--     -- I believe this is how ext generates ext_iff theorems so we should be fine
+--     -- to do this.
+--     let iffName := (extTheorem.declName.toString ++ "_iff").toName
+--     if !(env.contains iffName) then continue
+--     let iffTheorem ← mkConstWithFreshMVarLevels iffName
+--     let iffType ← inferType iffTheorem
+--     let (mvars, _, iff) ← forallMetaTelescope iffType
+--     let pattern := iff.getAppArgs[0]!
+--     let replace := iff.getAppArgs[1]!
+--     if (← isDefEq t pattern) then do
+--       let pattern ← instantiateMVars pattern
+--       let replace ← instantiateMVars replace
+--       let iffTheorem ← instantiateMVars (mkAppN iffTheorem mvars)
+--       let translation := mkAppN (Expr.const ``iff_to_translation []) #[pattern, replace, iffTheorem]
+--       return .some (replace, translation)
+--   return .none
 
 -- Returns the replaced expression as well as the Translation.
 def matchTranslation (t : Expr) : MetaM (Option (Expr × Expr)) := do
   withTransparency .none do
-  if let .some (replaced, translation) ← matchExt t then
-    return .some (replaced, translation)
+  -- if let .some (replaced, translation) ← matchExt t then
+  --   return .some (replaced, translation)
   TRANSLATIONS.findSomeM? fun name => do
     let head ← mkConstWithFreshMVarLevels name
     let type ← inferType head
