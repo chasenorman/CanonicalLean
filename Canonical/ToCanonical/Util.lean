@@ -146,16 +146,16 @@ def destructPremise (const : Name) (premise : Expr × Expr × Name) (simp : Bool
   if !simp && (← read).config.destruct then
     let structures := NameSet.ofArray (Destruct.STRUCTURES ++ (← read).structures)
     let structures := if let .some struct := ← Destruct.getStruct const then structures.erase struct else structures
-    if let (some (construct, destruct), _) ← (Destruct.separatePi premise.2.1 premise.2.2 .default).run structures then
-      let (metas, _, _) ← lambdaMetaTelescope' construct destruct.size .syntheticOpaque
-      let mut result := #[]
-      for (destruct, m) in destruct.zip metas do
-        let expr := destruct.bindingBody!.instantiate1 premise.1
-        -- m.mvarId!.assign expr
-        modifyThe MonoState fun s => { s with
-          mono := s.mono.insert (.sort .zero) (⟨m.mvarId!, ⟨expr, []⟩⟩ :: ((s.mono.get? (.sort .zero)).getD []))
-        }
-        let (mvarName, mvarType) ← toHead m
-        result := result.push (expr, mvarType, mvarName)
-      return (true, result)
+    let bij ← (Destruct.destructMain premise.2.1 premise.2.2).run structures
+    let (metas, _, _) ← lambdaMetaTelescope' bij.pack bij.unpack.size .syntheticOpaque
+    let mut result := #[]
+    for (destruct, m) in bij.unpack.zip metas do
+      let expr := destruct.bindingBody!.instantiate1 premise.1
+      -- m.mvarId!.assign expr
+      modifyThe MonoState fun s => { s with
+        mono := s.mono.insert (.sort .zero) (⟨m.mvarId!, ⟨expr, []⟩⟩ :: ((s.mono.get? (.sort .zero)).getD []))
+      }
+      let (mvarName, mvarType) ← toHead m
+      result := result.push (expr, mvarType, mvarName)
+    return (true, result)
   return (false, #[premise])
