@@ -19,25 +19,9 @@ public section
 structure Bijection where
   pack : Expr
   unpack : Array Expr
-
-  -- Specifically for destructTactic to determine the unpacked arities of
-  -- functions
-  arities : Option (List Nat)
-  deriving Inhabited
-
-def Bijection.p (b : Bijection) : String :=
-  let arities := b.arities
-  let pack := b.pack
-  let unpack := b.unpack.map fun e => s!"{e}"
-  let unpack' := "\n  ".intercalate unpack.toList
-  s!"\{\n arities := {arities},\n pack := {pack},\n unpack := [\n  {unpack'}\n ]\n}"
-
-def Bijection.pp (b : Bijection) : MetaM String := do
-  let arities := b.arities
-  let pack ← ppExpr b.pack
-  let unpack ← b.unpack.mapM fun e => do return toString (← ppExpr e)
-  let unpack' := "\n  ".intercalate unpack.toList
-  return s!"\{\n arities := {arities},\n pack := {pack},\n unpack := [\n  {unpack'}\n ]\n}"
+  /-- For destructTactic to determine the unpacked arities of functions -/
+  arities : List Nat := []
+deriving Inhabited
 
 def apply (fn : Expr) (arg : Expr) : Expr :=
   match fn with
@@ -53,14 +37,13 @@ def lambdaBinders (lam : Expr) (n : Nat) : List (Name × Expr) :=
   | Expr.lam name type body _ => (name, type)::lambdaBinders body (n-1)
   | _ => panic! s!"Destruct.lambdaBinders expected a lambda, got {lam}"
 
-partial def packTelescope (bijs : Array Bijection) (fvars : Array Expr) (k : Array (Array Expr) → Array Expr → MetaM α) : MetaM α := do
-  let rec recurse (i : Nat) (varBlocks : Array (Array Expr)) (packedBlocks : Array Expr) (k : Array (Array Expr) → Array Expr → MetaM α) : MetaM α := do
-    if i == bijs.size then return ← k varBlocks packedBlocks
-    let b := bijs[i]!
-    let pack := b.pack.replaceFVars (fvars.take i) packedBlocks
-    lambdaBoundedTelescope pack b.unpack.size fun vars packed => do
-      recurse (i + 1) (varBlocks.push vars) (packedBlocks.push packed) k
-  recurse 0 #[] #[] k
+partial def packTelescope {α} (bijs : Array Bijection) (fvars : Array Expr) (k : Array (Array Expr) → Array Expr → MetaM α)
+  (i : Nat := 0) (varBlocks : Array (Array Expr) := #[]) (packedBlocks : Array Expr := #[]) : MetaM α := do
+  if h : i < bijs.size then
+    let pack := bijs[i].pack.replaceFVars (fvars.take i) packedBlocks
+    lambdaBoundedTelescope pack bijs[i].unpack.size fun vars packed => do
+      packTelescope bijs fvars k (i + 1) (varBlocks.push vars) (packedBlocks.push packed)
+  else k varBlocks packedBlocks
 
 def getStruct (name : Name) : MetaM (Option Name) := do
   let env ← getEnv
