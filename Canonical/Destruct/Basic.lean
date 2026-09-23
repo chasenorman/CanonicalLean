@@ -37,7 +37,7 @@ partial def destructStruct (t : Expr) (binderName : Name)
       mkLambdaFVars varBlocks.flatten (packed.replaceFVars fvars packedBlocks)
 
     let unpack ← withLocalDecl binderName .default t fun fvar => do
-      let projs := Array.ofFn (n := numFields) (Expr.proj structName · fvar)
+      let projs := Array.ofFn (n := numFields) (.proj structName · fvar)
       let unpacks ← (bijs.zip projs).mapM fun (b, proj) => do
         b.unpack.mapM fun lam => do
           mkLambdaFVars #[fvar] (apply (lam.replaceFVars fvars projs) proj)
@@ -55,10 +55,7 @@ partial def destructPi (t : Expr) (binderName : Name)
     let unpack ← withLocalDecl binderName .default t fun f => do
       output.unpack.mapM fun field => mkLambdaFVars (#[f] ++ vars) (apply field (f.app packed))
 
-    let types := (lambdaBinders output.pack output.unpack.size).toArray.map fun (name, type) =>
-      (name, .default, fun fs => do mkForallFVars vars (type.instantiate (fs.map fun f => mkAppN f vars)))
-
-    withLocalDecls types fun fs => do
+    piTelescope (lambdaBinders output.pack output.unpack.size) vars fun fs => do
       let body := applyN output.pack (fs.map (mkAppN · vars))
       withLocalDecl inputName inputInfo inputType fun var => do
         let replaced := body.replaceFVars vars (input.unpack.map (apply · var))
