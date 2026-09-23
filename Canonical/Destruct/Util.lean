@@ -21,6 +21,9 @@ structure Bijection where
   unpack : Array Expr
   /-- For destructTactic to determine the unpacked arities of functions -/
   arities : List Nat := []
+  /-- Allows the destruct tactic to determine whether the Bijection has made
+  simplifications (not including beta reduction) to the type -/
+  madeProgress : Bool := false
 deriving Inhabited
 
 def apply (fn : Expr) (arg : Expr) : Expr :=

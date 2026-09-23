@@ -43,7 +43,7 @@ partial def destructStruct (t : Expr) (binderName : Name)
           mkLambdaFVars #[fvar] (apply (lam.replaceFVars fvars projs) proj)
       return unpacks.flatten
 
-    return { pack, unpack }
+    return { pack, unpack, madeProgress := true }
 
 partial def destructPi (t : Expr) (binderName : Name)
   (inputName : Name) (inputType : Expr) (outputType : Expr) (inputInfo : BinderInfo) : DestructM Bijection := do
@@ -60,7 +60,7 @@ partial def destructPi (t : Expr) (binderName : Name)
       withLocalDecl inputName inputInfo inputType fun var => do
         let replaced := body.replaceFVars vars (input.unpack.map (apply · var))
         let pack ← mkLambdaFVars (fs.push var) replaced
-        return { pack, unpack, arities := input.unpack.size :: output.arities }
+        return { pack, unpack, arities := input.unpack.size :: output.arities, madeProgress := input.madeProgress || output.madeProgress }
 
 partial def destructTranslation (t : Expr) (binderName : Name) : DestructM Bijection := do
   let .some (translated, translation) ← matchTranslation t | return destructTrivial t binderName
@@ -69,7 +69,7 @@ partial def destructTranslation (t : Expr) (binderName : Name) : DestructM Bijec
     mkLambdaFVars fvars (.app (.proj ``Translation 1 translation) packed)
   let unpack ← bij.unpack.mapM fun un => withLocalDecl binderName .default t fun fvar => do
     mkLambdaFVars #[fvar] (apply un (.app (.proj ``Translation 0 translation) fvar))
-  return { pack, unpack }
+  return { pack, unpack, madeProgress := true }
 
 partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs : Array Expr) : DestructM Bijection := do
   if headFn.constName?.isNone then return destructTrivial t binderName
@@ -92,7 +92,9 @@ partial def destructMain (t : Expr) (binderName : Name) : DestructM Bijection :=
 end
 
 -- Interfaces
-partial def destructTactic (goal : MVarId) (premises : Array Name) : MetaM (Array (Array FVarId × MVarId)) := do
+partial def destructTactic (goal : MVarId) (premises : Array Name) : MetaM (Array (Array FVarId × MVarId) × Bool) := do
+  -- TODO: Potentially refactor this? We can maybe think about putting the
+  -- return type in a struct
   let toRevert ← goal.withContext do
     let mut toRevert := #[]
     let instances ← (← getLCtx).getFVarIds.filterM fun name => do pure (← name.getBinderInfo).isInstImplicit
@@ -108,9 +110,10 @@ partial def destructTactic (goal : MVarId) (premises : Array Name) : MetaM (Arra
     let binderNames := ((lambdaBinders bij.pack bij.unpack.size).map (·.1)).toArray
     let (mvars, _, goalBody) ← lambdaMetaTelescope bij.pack bij.unpack.size
     reverted.assign goalBody
-    (mvars.zip binderNames).mapM fun (mvar, name) => do
+    let goalInfo ← (mvars.zip binderNames).mapM fun (mvar, name) => do
       mvar.mvarId!.setUserName name
       mvar.mvarId!.introNP (bij.arities.take toRevert.size).sum
+    return (goalInfo, bij.madeProgress)
 
 def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (Expr → MetaM Expr)) := do
   let env ← getEnv
@@ -122,6 +125,7 @@ def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (E
     let dneg := (env.find? ``Canonical.dneg).get!.value!
     let next := (← goal.apply (Canonical.apply dneg [typ]))[0]!
     let destruct ← destructTactic next (STRUCTURES ++ names ++ consts)
+    let destruct := destruct.1
     let result := destruct[0]!
     let ⟨_, _, assignment⟩ := ← abstractMVars
       (← instantiateMVars (← getExprMVarAssignment? goal).get!)
