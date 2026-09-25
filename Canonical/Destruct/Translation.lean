@@ -22,14 +22,10 @@ structure Translation (A : Sort u) (B : Sort v) where
 def iff_to_translation {A B} (h : A ↔ B) : Translation A B :=
   ⟨h.mp, h.mpr⟩
 
-structure Exists' (α : Sort u) (p : α → Prop) where
-  value : α
-  proof : p value
-
-noncomputable def translate_exists (α : Sort u) (p : α → Prop) : Translation (Exists p) (Exists' α p) :=
+noncomputable def translate_exists (α : Sort u) (p : α → Prop) : Translation (Exists p) ({ x : α // p x }) :=
   ⟨
-    fun e => { value := e.choose, proof := e.choose_spec },
-    fun e' => Exists.intro e'.value e'.proof
+    fun e => { val := e.choose, property := e.choose_spec },
+    fun e' => Exists.intro e'.val e'.property
   ⟩
 
 structure Unit' where

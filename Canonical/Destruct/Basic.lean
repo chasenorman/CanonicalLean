@@ -15,7 +15,7 @@ public section
 
 /-- The default structures that are unpacked by `destruct`. -/
 def STRUCTURES :=
-  #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array, ``Exists', ``Unit']
+  #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array, ``Unit']
 
 def destructTrivial (t : Expr) (binderName : Name) : Bijection :=
   let id := .lam binderName t (.bvar 0) .default
