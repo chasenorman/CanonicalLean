@@ -112,7 +112,7 @@ partial def destructTranslation (t : Expr) (binderName : Name) : DestructM Bijec
   let pack ← lambdaBoundedTelescope bij.pack bij.unpack.size fun fvars packed => do
     mkLambdaFVars fvars (applyWeak g packed)
   let unpack ← bij.unpack.mapM fun un => withLocalDecl binderName .default t fun fvar => do
-    mkLambdaFVars #[fvar] (apply un (.app f fvar))
+    mkLambdaFVars #[fvar] (apply un (applyWeak f fvar))
   return { pack, unpack, madeProgress := true }
 
 partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs : Array Expr) : DestructM Bijection := do
