@@ -20,8 +20,8 @@ def daemonPort : Nat := 8765
 def premisePort : Nat := 8766
 
 private def llamaCppRepo : String := "FrederickPu/llama.cpp"
-private def llamaCppTag : String := "premise-v9"
-def mathlibCache : String := "chasenorman/mathlib-cache"
+private def llamaCppTag : String := "premise-v11"
+def premiseCache : String := "chasenorman/mathlib-cache"
 
 private def runCommand (cmd : String) (args : Array String) : IO String := do
   let out ← IO.Process.output { cmd, args }
@@ -169,7 +169,7 @@ def killDaemon (port : Nat) : IO Unit := do
 
 def cacheRelease : String := "v" ++ Lean.versionString
 def cacheUrl (file : String) : String :=
-  s!"https://huggingface.co/datasets/{mathlibCache}/resolve/{cacheRelease}/{file}"
+  s!"https://huggingface.co/datasets/{premiseCache}/resolve/{cacheRelease}/{file}"
 
 /-- Whether the dataset has `file` for this Lean version (`false` offline too). -/
 def cacheAvailable (file : String) : IO Bool := do
@@ -197,16 +197,20 @@ private def ensureCache (db : FilePath) : IO Unit := do
   if !(← db.pathExists) then
     let _ ← downloadCache log db "lean.db"
 
-def startPremiseDaemon (prebuilt := true) : IO Unit := do
+def premiseDb : IO FilePath := do
   let libDir := (← IO.currentDir) / ".lake" / "build" / "lib" / "lean"
   IO.FS.createDirAll libDir
-  if prebuilt then ensureCache log (libDir / "premise.db")
+  return libDir / "premise.db"
+
+def startPremiseDaemon (prebuilt := true) : IO Unit := do
+  let db ← premiseDb
+  if prebuilt then ensureCache log db
   if ← isPortHealthy premisePort then return
   let model ← ensureModelFile log "chasenorman/lean-premise-distilroberta-GGUF"
     "thomas-zhu-lean-premise.f16.gguf"
   let args := #["--premise", "-m", model.toString,
     "--host", daemonHost, "--port", toString premisePort, "--pooling", "mean",
-    "--ctx-size", "512", "--index-db", (libDir / "premise.db").toString]
+    "--ctx-size", "512", "--index-db", db.toString]
   log "status" "Starting premise server…"
   spawnDaemon log args premisePort
   log "status" ""

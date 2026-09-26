@@ -35,24 +35,27 @@ private def getModuleVersionToken (mod : Name) : IO String := do
   let hash ← Lake.Hash.load? (FilePath.mk <| path.toString ++ ".hash")
   return (← hash.getDM (Lake.computeBinFileHash path)).hex
 
-private def curlPost (path : String) (data : Json) : IO String := do
+private def curl (path : String) (data : Json) (method := "POST") : IO String := do
   let url := s!"http://{daemonHost}:{premisePort}{path}"
   let out ← IO.Process.output {
     cmd := "curl"
-    args := #["-sS", "-X", "POST", "--header", "Content-Type: application/json", "--data", "@-", url]
+    args := #["-sS", "-X", method, "--header", "Content-Type: application/json", "--data", "@-", url]
   } (some data.compress)
   if out.exitCode ≠ 0 then
     throw <| IO.userError s!"curl to {url} failed:\n{out.stderr}"
   return out.stdout
 
 private def request {α} [FromJson α] (path : String) (data : Json) : IO α := do
-  IO.ofExcept (Json.parse (← curlPost path data) >>= fromJson?)
+  IO.ofExcept (Json.parse (← curl path data) >>= fromJson?)
+
+private def setIndex (db : FilePath) : IO Unit := do
+  let _ ← curl "/index" (Json.mkObj [("path", toJson db.toString)]) (method := "PUT")
 
 private def getCachedModuleVersionTokens (mods : Array Name) : IO (Array (Option String)) :=
   request "/version" (Json.mkObj [("modules", toJson (mods.map (·.toString)))])
 
 private def cacheModule (mod : Name) (declarations : Array Premise) (token : String) : IO Unit := do
-  let _ ← curlPost "/cache" (Json.mkObj [
+  let _ ← curl "/cache" (Json.mkObj [
     ("module", toJson mod.toString),
     ("declarations", toJson declarations),
     ("token", toJson token)])
@@ -92,6 +95,7 @@ private def toPremise (name : Name) : MetaM (Option Premise) := do
 private def select (log : String → String → IO Unit) (goal : MVarId) (config : LibrarySuggestions.Config) :
     MetaM (Array Suggestion) := withOptions roundtrip do
   startPremiseDaemon log
+  setIndex (← premiseDb)
   let env ← getEnv
   let mods := env.allImportedModuleNames.filter (!isDeniedModule env ·)
   let cached ← getCachedModuleVersionTokens mods
@@ -117,48 +121,48 @@ private def select (log : String → String → IO Unit) (goal : MVarId) (config
 @[library_suggestions] def premiseSelector : Selector := fun goal config =>
   select (fun _ _ => pure ()) goal config
 
-structure WidgetSuggestion where
+structure WidgetPremise where
   score : Float
   decl : WithRpcRef MessageData
 deriving RpcEncodable
 
-abbrev SuggestTask := Task (Except IO.Error (Array WidgetSuggestion))
+abbrev PremisesTask := Task (Except IO.Error (Array WidgetPremise))
 
-instance : TypeName SuggestTask := unsafe (.mk _ ``SuggestTask)
+instance : TypeName PremisesTask := unsafe (.mk _ ``PremisesTask)
 
-structure SuggestProps where
-  task : WithRpcRef SuggestTask
+structure PremisesProps where
+  task : WithRpcRef PremisesTask
   pipe : WithRpcRef Pipe
 deriving RpcEncodable
 
-private def widgetSuggestions (log : String → String → IO Unit) (goal : MVarId) (k : Nat) :
-    MetaM (Array WidgetSuggestion) := do
+private def widgetPremises (log : String → String → IO Unit) (goal : MVarId) (k : Nat) :
+    MetaM (Array WidgetPremise) := do
   let mdc := MessageDataContext.mk (← getEnv) (← getMCtx) (← getLCtx) (← getOptions)
   (← select log goal { maxSuggestions := k }).mapM fun s => return {
     score := s.score, decl := ← WithRpcRef.mk (MessageData.withContext mdc (.ofConstName s.name)) }
 
 @[server_rpc_method]
-def getSuggestions (task : WithRpcRef SuggestTask) : RequestM (RequestTask (Array WidgetSuggestion)) :=
+def getPremises (task : WithRpcRef PremisesTask) : RequestM (RequestTask (Array WidgetPremise)) :=
   asTask (IO.ofExcept task.val.get)
 
 @[widget_module]
-def suggestWidget : Widget.Module where
-  javascript := include_str "include/suggest.js"
+def premisesWidget : Widget.Module where
+  javascript := include_str "include/premises.js"
 
 /-- Select relevant constants from the imported library modules. -/
-syntax (name := suggestTac) "suggest" (ppSpace num)? : tactic
+syntax (name := premisesTac) "premises" (ppSpace num)? : tactic
 
 elab_rules : tactic
-  | `(tactic| suggest $[$k?]?) => do
+  | `(tactic| premises $[$k?]?) => do
     let k := (k?.map (·.getNat)).getD 20
     let pipe : Pipe ← Std.Channel.Sync.new
     let goal ← getMainGoal
-    let task ← goal.withContext (widgetSuggestions pipe.log goal k).toTask
-    let props : SuggestProps := {
+    let task ← goal.withContext (widgetPremises pipe.log goal k).toTask
+    let props : PremisesProps := {
       task := ← WithRpcRef.mk (task.task.map (sync := true) (·.map (·.1)))
       pipe := ← WithRpcRef.mk pipe
     }
-    Widget.savePanelWidgetInfo (hash suggestWidget.javascript) (← getRef)
+    Widget.savePanelWidgetInfo (hash premisesWidget.javascript) (← getRef)
       (props := RpcEncodable.rpcEncode props)
     goal.admit
     Lean.logInfoAt (← getRef) ""
