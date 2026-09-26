@@ -10,6 +10,7 @@ namespace Destruct
 
 public section
 
+
 /-- A mapping between an expression `e` and its constituent expressions `e₁`,
     ..., `eₙ`.
 
@@ -34,19 +35,25 @@ def apply (fn : Expr) (arg : Expr) : Expr :=
 def applyN (fn : Expr) (args : Array Expr) : Expr :=
   args.foldl (fun app arg => apply app arg) fn
 
+def applyWeak (fn : Expr) (arg : Expr) : Expr :=
+  match fn with
+  | .lam _ _ body _ => body.instantiate1 arg
+  | _ => .app fn arg
+
 def lambdaBinders (lam : Expr) (n : Nat) : List (Name × Expr) :=
   if n == 0 then [] else
   match lam with
   | .lam name type body _ => (name, type)::lambdaBinders body (n-1)
   | _ => panic! s!"Destruct.lambdaBinders expected a lambda, got {lam}"
 
-partial def packTelescope {α} (bijs : Array Bijection) (fvars : Array Expr) (k : Array (Array Expr) → Array Expr → MetaM α)
-  (i : Nat := 0) (varBlocks : Array (Array Expr) := #[]) (packedBlocks : Array Expr := #[]) : MetaM α := do
-  if h : i < bijs.size then
-    let pack := bijs[i].pack.replaceFVars (fvars.take i) packedBlocks
-    lambdaBoundedTelescope pack bijs[i].unpack.size fun vars packed => do
-      packTelescope bijs fvars k (i + 1) (varBlocks.push vars) (packedBlocks.push packed)
-  else k varBlocks packedBlocks
+partial def packTelescope {α} (info : List (Bijection × Expr)) (k : Array Expr → Array Expr → MetaM α)
+  (context : Array Expr := #[]) (vars : Array Expr := #[]) (packeds : Array Expr := #[]) : MetaM α := do
+  match info with
+  | (bij, fvar)::info =>
+    let pack := bij.pack.replaceFVars context packeds
+    lambdaBoundedTelescope pack bij.unpack.size fun newVars packed => do
+      packTelescope info k (context.push fvar) (vars ++ newVars) (packeds.push packed)
+  | [] => k vars packeds
 
 partial def piTelescope {α} (binders : List (Name × Expr)) (vars : Array Expr) (k : Array Expr → MetaM α)
   (fs : Array Expr := #[]) : MetaM α :=
@@ -56,6 +63,10 @@ partial def piTelescope {α} (binders : List (Name × Expr)) (vars : Array Expr)
     let pi ← mkForallFVars vars instantiated
     withLocalDeclD name pi fun f => piTelescope binders' vars k (fs.push f)
   | [] => k fs
+
+def prefixName (binderName : Name) (userName : Name) : Name :=
+  if binderName.isInternal then userName
+  else (binderName.toString ++ "_" ++ userName.toString).toName
 
 def getStruct (name : Name) : MetaM (Option Name) := do
   let env ← getEnv

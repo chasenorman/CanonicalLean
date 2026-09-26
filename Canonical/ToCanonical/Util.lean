@@ -144,9 +144,9 @@ def monomorphizePremise (name : Name) : ToCanonicalM (Bool × Array (Expr × Exp
 
 def destructPremise (const : Name) (premise : Expr × Expr × Name) (simp : Bool) : ToCanonicalM (Bool × Array (Expr × Expr × Name)) := do
   if !simp && (← read).config.destruct then
-    let structures := NameSet.ofArray (Destruct.STRUCTURES ++ (← read).structures)
+    let structures := (← read).structures
     let structures := if let .some struct := ← Destruct.getStruct const then structures.erase struct else structures
-    let bij ← (Destruct.destructMain premise.2.1 premise.2.2).run structures
+    let bij ← (Destruct.destructMain premise.2.1 premise.2.2).run (Destruct.Context.make structures)
     let (metas, _, _) ← lambdaMetaTelescope' bij.pack bij.unpack.size .syntheticOpaque
     let mut result := #[]
     for (destruct, m) in bij.unpack.zip metas do

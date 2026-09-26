@@ -22,7 +22,7 @@ structure Translation (A : Sort u) (B : Sort v) where
 def iff_to_translation {A B} (h : A ↔ B) : Translation A B :=
   ⟨h.mp, h.mpr⟩
 
-noncomputable def translate_exists (α : Sort u) (p : α → Prop) : Translation (Exists p) ({ x : α // p x }) :=
+noncomputable def translate_exists (α : Sort u) (p : α → Prop) : Translation (Exists p) { x : α // p x } :=
   ⟨
     fun e => { val := e.choose, property := e.choose_spec },
     fun e' => Exists.intro e'.val e'.property
@@ -44,20 +44,3 @@ def translate_punit : Translation PUnit Unit' :=
 -- Set equality via double containment (actually this is provided by ext)
 -- Unfolding the subseteq definition
 -- Translating decidable propositions?
-
--- Remember to update these after defining a new translation!
-def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit]
-
--- Returns the replaced expression as well as the Translation.
-def matchTranslation (t : Expr) : MetaM (Option (Expr × Expr)) := withTransparency .none do
-  for name in TRANSLATIONS do
-    let head ← mkConstWithFreshMVarLevels name
-    let type ← inferType head
-    let (mvars, _, translation) ← forallMetaTelescope type
-    let pattern := translation.getAppArgs[0]!
-    let replace := translation.getAppArgs[1]!
-    if ← isDefEqGuarded t pattern then
-      let replaced ← instantiateMVars replace
-      let translated ← instantiateMVars (mkAppN head mvars)
-      return .some (replaced, translated)
-  return .none
