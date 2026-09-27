@@ -92,7 +92,7 @@ private def toPremise (name : Name) : MetaM (Option Premise) := do
     return some ⟨name, docPrefix ++ kind ++ " " ++ fmt.pretty 1000000000⟩
   catch _ => return none
 
-private def select (log : String → String → IO Unit) (goal : MVarId) (config : LibrarySuggestions.Config) :
+def select (log : String → String → IO Unit) (goal : MVarId) (config : LibrarySuggestions.Config) :
     MetaM (Array Suggestion) := withOptions roundtrip do
   startPremiseDaemon log
   setIndex (← premiseDb)

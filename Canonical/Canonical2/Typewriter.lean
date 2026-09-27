@@ -1,11 +1,11 @@
 module
 
-public meta import Lean.LibrarySuggestions.Basic
+public meta import Canonical.Canonical2.Basic
+public import Canonical.Canonical2.Rpc
+public import Lean.LibrarySuggestions.Basic
 public import Lean.Expr
 public import Lean.Server.Rpc.Basic
 public import Lean.Message
-public meta import Canonical.Canonical2.Basic
-public import Canonical.Canonical2.Rpc
 
 open Lean Meta Expr Elab Term Server Tactic Core RequestM IO LibrarySuggestions
 

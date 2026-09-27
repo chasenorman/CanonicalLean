@@ -4,7 +4,7 @@ public meta import Canonical.Canonical2.Rpc
 public meta import Canonical.Canonical2.LLM
 public meta import Canonical.Canonical2.Llama
 public import Canonical.Canonical2.Basic
-public import Lean.LibrarySuggestions.Basic
+public import Canonical.Canonical2.PremiseSelection
 
 open Lean Meta Expr Elab Term Server Tactic Core RequestM IO LibrarySuggestions
 
@@ -63,7 +63,7 @@ def subgoalTools (hyps : Array String) : Provider → Json
     ]
   ]
 
-structure RolloutDraft where
+structure RolloutSubgoal where
   mvarId : MVarId
   children : Array MVarId
   fvar : FVarId
@@ -97,7 +97,7 @@ def checkDuplicate (mvar : MVarId) (type : Expr) : MetaM Unit := do
 def generate (log : String → String → IO Unit) (mvar : MVarId) (premises : Array Name)
   (provider : Provider) (config : LLMConfig := defaultConfig provider)
   (retries := if config.temperature == 0.0 then 1 else 3) (wait : UInt32 := 0) (stall := 0)
-  (prompt : String := "") : MetaM (MetaTask RolloutDraft) := mvar.withContext do
+  (prompt : String := "") : MetaM (MetaTask RolloutSubgoal) := mvar.withContext do
   let llmRef : IO.Ref (Option (CancelableTask (Except IO.Error Response))) ← IO.mkRef none
   MetaM.toTask (cancel := do if let some t ← llmRef.get then t.cancel) do
     log "generate" ""
@@ -194,7 +194,7 @@ def step : WithMeta ToStep → RequestM (RequestTask (WithRpcRef MetaTaskUnit)) 
       startSubgoalDaemon log
       pure (.Llama s!"http://{daemonHost}:{daemonPort}/chat/completions")
   log "print" "Selecting premises…"
-  let premises ← select params.mvar { maxSuggestions := 64 } -- TODO uncancelable
+  let premises ← select log params.mvar { maxSuggestions := 64 } -- TODO uncancelable
   log "print" ""
   let automateTasks := (← automateTasks params.mvar (premises.map (·.name)) 10).map (·.map (fun _ => ()))
   let generateTask := (← generate log params.mvar (premises.map (·.name)) provider
