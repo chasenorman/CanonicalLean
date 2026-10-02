@@ -17,29 +17,23 @@ structure Context where
   /-- The structures that are unpacked by `destruct`. -/
   structures : NameSet
   /-- The translations `destruct` will attempt to apply to subexpressions. -/
-  translations : NameSet
+  translations : Array MetaTranslation
 
-def Context.make (userStructures : Array Name := #[]) (userTranslations : Array Name := #[]) : Context :=
-  {
-    structures := NameSet.ofArray
-      (#[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array, ``Unit'] ++ userStructures),
-    translations := NameSet.ofArray
-      (#[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit] ++ userTranslations)
-  }
+def STRUCTURES : Array Name := #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array, ``Unit']
+def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit]
 
-def Context.fromNames (names : Array Name) : MetaM Context := do
-  let mut structures := #[]
+def Context.populate (names : Array Name) : MetaM Context := do
+  let names := TRANSLATIONS ++ names
+  let mut structures : NameSet := NameSet.ofArray STRUCTURES
   let mut translations := #[]
   let env ← getEnv
   for name in names do
-    dbg_trace name
     if let .some _ := getStructureInfo? env name then
-      structures := structures.push name
+      structures := structures.insert name
     else if let .some info := env.find? name then
-      let bodyHead := info.type.getForallBody.getAppFn.constName?
-      if .some ``Translation == bodyHead then
-        translations := translations.push name
-  return Context.make structures translations
+      if let .some mt ← (MetaTranslation.make info).run then
+        translations := translations.push mt
+  return { structures, translations }
 
 def destructTrivial (t : Expr) (binderName : Name) : Bijection :=
   let id := .lam binderName t (.bvar 0) .default
@@ -48,19 +42,20 @@ def destructTrivial (t : Expr) (binderName : Name) : Bijection :=
 abbrev DestructM := ReaderT Context MetaM
 
 -- Returns the replaced expression as well as the Translation.
-def matchTranslation (t : Expr) : DestructM (Option (Expr × Expr)) := withTransparency .none do
-  for name in (← read).translations do
-    let info ← getConstInfo name
-    let head ← mkConstWithFreshMVarLevels name
-    let type ← inferType head
+def matchTranslation (t : Expr) : DestructM (Option (Expr × Expr × Expr)) := withTransparency .none do
+  for mt in (← read).translations do
+    let levels ← mkFreshLevelMVars mt.levels.length
+    let type := mt.type.instantiateLevelParams mt.levels levels
     let (mvars, _, translation) ← forallMetaTelescope type
     let pattern := translation.getAppArgs[0]!
     let replace := translation.getAppArgs[1]!
     if ← isDefEqGuarded t pattern then
       let replaced ← instantiateMVars replace
-      let value := info.value!.instantiateLevelParams info.levelParams head.constLevels!
-      let translated ← instantiateMVars (Canonical.apply value mvars.toList)
-      return .some (replaced, translated)
+      let f := mt.f.instantiateLevelParams mt.levels levels
+      let f ← instantiateMVars (applyN f mvars)
+      let g := mt.g.instantiateLevelParams mt.levels levels
+      let g ← instantiateMVars (applyN g mvars)
+      return .some (replaced, f, g)
   return .none
 
 mutual
@@ -105,14 +100,12 @@ partial def destructPi (t : Expr) (binderName : Name)
         return { pack, unpack, arities := input.unpack.size :: output.arities, madeProgress := input.madeProgress || output.madeProgress }
 
 partial def destructTranslation (t : Expr) (binderName : Name) : DestructM Bijection := do
-  let .some (translated, translation) ← matchTranslation t | return destructTrivial t binderName
+  let .some (translated, f, g) ← matchTranslation t | return destructTrivial t binderName
   let bij ← destructMain translated binderName
-  let f := (← projectCore? translation 0).getD (.proj ``Translation 0 translation)
-  let g := (← projectCore? translation 1).getD (.proj ``Translation 1 translation)
   let pack ← lambdaBoundedTelescope bij.pack bij.unpack.size fun fvars packed => do
-    mkLambdaFVars fvars (applyWeak g packed)
+    mkLambdaFVars fvars (apply g packed)
   let unpack ← bij.unpack.mapM fun un => withLocalDecl binderName .default t fun fvar => do
-    mkLambdaFVars #[fvar] (apply un (applyWeak f fvar))
+    mkLambdaFVars #[fvar] (apply un (apply f fvar))
   return { pack, unpack, madeProgress := true }
 
 partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs : Array Expr) : DestructM Bijection := do
@@ -130,7 +123,7 @@ partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs
   destructTranslation t binderName
 
 partial def destructMain (t : Expr) (binderName : Name) : DestructM Bijection := do
-  match t.consumeMData.headBeta with
+  match (← whnf t.consumeMData) with
   | t@(.forallE name type body info) => destructPi t binderName name type body info
   | t@(.const _ _) | t@(.app _ _) => destructApp t binderName t.getAppFn t.getAppArgs
   | _ => return destructTrivial t binderName
@@ -169,7 +162,7 @@ def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (E
     let typ ← goal.getType
     let dneg := (env.find? ``Canonical.dneg).get!.value!
     let next := (← goal.apply (Canonical.apply dneg [typ]))[0]!
-    let context := Context.make (names ++ consts)
+    let context ← Context.populate (names ++ consts)
     let destruct ← destructTactic next context
     let destruct := destruct.1
     let result := destruct[0]!

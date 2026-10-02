@@ -146,7 +146,7 @@ def destructPremise (const : Name) (premise : Expr × Expr × Name) (simp : Bool
   if !simp && (← read).config.destruct then
     let structures := (← read).structures
     let structures := if let .some struct := ← Destruct.getStruct const then structures.erase struct else structures
-    let bij ← (Destruct.destructMain premise.2.1 premise.2.2).run (Destruct.Context.make structures)
+    let bij ← (Destruct.destructMain premise.2.1 premise.2.2).run (← Destruct.Context.populate structures)
     let (metas, _, _) ← lambdaMetaTelescope' bij.pack bij.unpack.size .syntheticOpaque
     let mut result := #[]
     for (destruct, m) in bij.unpack.zip metas do

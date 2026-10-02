@@ -28,17 +28,10 @@ structure Bijection where
 deriving Inhabited
 
 def apply (fn : Expr) (arg : Expr) : Expr :=
-  match fn with
-  | .lam _ _ body _ => body.instantiate1 arg
-  | _ => panic! s!"Destruct.apply expected a lambda, got {fn}"
+  (Expr.app fn arg).headBeta
 
 def applyN (fn : Expr) (args : Array Expr) : Expr :=
-  args.foldl (fun app arg => apply app arg) fn
-
-def applyWeak (fn : Expr) (arg : Expr) : Expr :=
-  match fn with
-  | .lam _ _ body _ => body.instantiate1 arg
-  | _ => .app fn arg
+  (mkAppN fn args).headBeta
 
 def lambdaBinders (lam : Expr) (n : Nat) : List (Name × Expr) :=
   if n == 0 then [] else
