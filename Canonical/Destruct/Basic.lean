@@ -92,12 +92,12 @@ partial def destructPi (t : Expr) (binderName : Name)
     let unpack ← withLocalDecl binderName .default t fun f => do
       output.unpack.mapM fun field => mkLambdaFVars (#[f] ++ vars) (apply field (f.app packed))
 
-    piTelescope (lambdaBinders output.pack output.unpack.size) vars fun fs => do
-      let body := applyN output.pack (fs.map (mkAppN · vars))
+    let pack ← lambdaBoundedTelescopeDestruct output.pack output.unpack.size vars fun fs body => do
       withLocalDecl inputName inputInfo inputType fun var => do
         let replaced := body.replaceFVars vars (input.unpack.map (apply · var))
-        let pack ← mkLambdaFVars (fs.push var) replaced
-        return { pack, unpack, arities := input.unpack.size :: output.arities, madeProgress := input.madeProgress || output.madeProgress }
+        mkLambdaFVars (fs.push var) replaced
+
+    return { pack, unpack, arities := input.unpack.size :: output.arities, madeProgress := input.madeProgress || output.madeProgress }
 
 partial def destructTranslation (t : Expr) (binderName : Name) : DestructM Bijection := do
   let .some (translated, f, g) ← matchTranslation t | return destructTrivial t binderName

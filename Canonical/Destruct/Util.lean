@@ -48,14 +48,22 @@ partial def packTelescope {α} (info : List (Bijection × Expr)) (k : Array Expr
       packTelescope info k (context.push fvar) (vars ++ newVars) (packeds.push packed)
   | [] => k vars packeds
 
-partial def piTelescope {α} (binders : List (Name × Expr)) (vars : Array Expr) (k : Array Expr → MetaM α)
-  (fs : Array Expr := #[]) : MetaM α :=
-  match binders with
-  | (name, type)::binders' => do
-    let instantiated := type.instantiate (fs.map fun f => mkAppN f vars)
-    let pi ← mkForallFVars vars instantiated
-    withLocalDeclD name pi fun f => piTelescope binders' vars k (fs.push f)
-  | [] => k fs
+partial def lambdaBoundedTelescopeDestruct {α} (lam : Expr) (n : Nat) (vars : Array Expr) (k : Array Expr → Expr → MetaM α) (fs : Array Expr := #[]) : MetaM α :=
+  match (lam, n) with
+  | (.lam name type body _, .succ n) => do
+    let pi ← mkForallFVars vars type
+    withLocalDeclD name pi fun f => do
+      lambdaBoundedTelescopeDestruct (body.instantiate1 (mkAppN f vars)) n vars k (fs.push f)
+  | _ => k fs lam
+  -- | (name, type)::binders' => do
+  --   let instantiated := type.instantiate (fs.map fun f => mkAppN f vars)
+  --   let pi ← mkForallFVars vars instantiated
+  --   withLocalDeclD name pi fun f => piTelescope binders' vars k (fs.push f)
+  -- | [] => k fs
+
+-- (a : A) → (b : B a) × (C a b)
+-- f : (a : A) → B a
+-- (a : A) → C a (f a)
 
 def prefixName (binderName : Name) (userName : Name) : Name :=
   if binderName.isInternal then userName
