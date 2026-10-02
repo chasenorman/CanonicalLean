@@ -44,7 +44,7 @@ instance [Monad m] : MonadLift Option (OptionT m) where
 def MetaTranslation.make (info : ConstantInfo) : OptionT MetaM MetaTranslation := do
   let value ← info.value? (allowOpaque := true)
   let head := info.type.getForallBody
-  let .const headName headLevels := head | failure
+  let .const headName headLevels := head.getAppFn | failure
   if headName != ``Iff && headName != ``Translation then failure
   let isIff := headName == ``Iff
   lambdaTelescope value fun fvars packed => do

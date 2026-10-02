@@ -33,6 +33,7 @@ def Context.populate (names : Array Name) : MetaM Context := do
     else if let .some info := env.find? name then
       if let .some mt ← (MetaTranslation.make info).run then
         translations := translations.push mt
+  dbg_trace translations.size
   return { structures, translations }
 
 def destructTrivial (t : Expr) (binderName : Name) : Bijection :=
@@ -123,6 +124,7 @@ partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs
   destructTranslation t binderName
 
 partial def destructMain (t : Expr) (binderName : Name) : DestructM Bijection := do
+  dbg_trace t
   match (← whnf t.consumeMData) with
   | t@(.forallE name type body info) => destructPi t binderName name type body info
   | t@(.const _ _) | t@(.app _ _) => destructApp t binderName t.getAppFn t.getAppArgs
