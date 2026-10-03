@@ -206,12 +206,16 @@ partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
               logWarning s!"Failed to monomorphize {fn}"
               return .continue
 
+            let mvars ← mvars.mapM instantiateMVars
+            if mvars.any Expr.hasMVar then
+              return .continue
+
             -- Add this to mono state.
             modify fun s => { s with
               mono := s.mono.insert fn (⟨specMvarId, ⟨abstracted, paramNames.toList⟩⟩ :: cachedSpec)
             }
 
-            let newExpr ← instantiateMVars (mkAppN (.mvar specMvarId) mvars)
+            let newExpr := mkAppN (.mvar specMvarId) mvars
             return .continue newExpr
     return .continue
 
