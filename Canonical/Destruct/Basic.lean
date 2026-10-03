@@ -13,13 +13,16 @@ namespace Destruct
 
 public section
 
+/-- A structure storing the constant information for the `destruct` tactic. -/
 structure Context where
   /-- The structures that are unpacked by `destruct`. -/
   structures : NameSet
   /-- The translations `destruct` will attempt to apply to subexpressions. -/
   translations : Array MetaTranslation
 
+/-- Default structures that `destruct` will unpack. -/
 def STRUCTURES : Array Name := #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array, ``Unit']
+/-- Default translations that `destruct` will apply. -/
 def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit]
 
 def Context.populate (names : Array Name) : MetaM Context := do
@@ -33,7 +36,6 @@ def Context.populate (names : Array Name) : MetaM Context := do
     else if let .some info := env.find? name then
       if let .some mt ← (MetaTranslation.make info).run then
         translations := translations.push mt
-  dbg_trace translations.size
   return { structures, translations }
 
 def destructTrivial (t : Expr) (binderName : Name) : Bijection :=
@@ -42,7 +44,6 @@ def destructTrivial (t : Expr) (binderName : Name) : Bijection :=
 
 abbrev DestructM := ReaderT Context MetaM
 
--- Returns the replaced expression as well as the Translation.
 def matchTranslation (t : Expr) : DestructM (Option (Expr × Expr × Expr)) := withTransparency .none do
   for mt in (← read).translations do
     let levels ← mkFreshLevelMVars mt.levels.length
@@ -87,7 +88,6 @@ partial def destructPi (t : Expr) (binderName : Name)
   (inputName : Name) (inputType : Expr) (outputType : Expr) (inputInfo : BinderInfo) : DestructM Bijection := do
   let input ← destructMain inputType inputName
   lambdaBoundedTelescope input.pack input.unpack.size fun vars packed => do
-    -- TODO: Is binderName the correct thing to put here?
     let output ← destructMain (outputType.instantiate1 packed) binderName
 
     let unpack ← withLocalDecl binderName .default t fun f => do
@@ -124,8 +124,7 @@ partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs
   destructTranslation t binderName
 
 partial def destructMain (t : Expr) (binderName : Name) : DestructM Bijection := do
-  dbg_trace t
-  match (← whnf t.consumeMData) with
+  match ← whnf t.consumeMData with
   | t@(.forallE name type body info) => destructPi t binderName name type body info
   | t@(.const _ _) | t@(.app _ _) => destructApp t binderName t.getAppFn t.getAppArgs
   | _ => return destructTrivial t binderName
@@ -133,8 +132,6 @@ end
 
 -- Interfaces
 partial def destructTactic (goal : MVarId) (context : Context) : MetaM (Array (Array FVarId × MVarId) × Bool) := do
-  -- TODO: Potentially refactor this? We can maybe think about putting the
-  -- return type in a struct
   let toRevert ← goal.withContext do
     let mut toRevert := #[]
     let instances ← (← getLCtx).getFVarIds.filterM fun name => do pure (← name.getBinderInfo).isInstImplicit
@@ -147,7 +144,7 @@ partial def destructTactic (goal : MVarId) (context : Context) : MetaM (Array (A
     let bij ← (destructMain (← reverted.getType) `destruct).run context
     -- Note: lambdaMetaTelescope doesn't preserve names, so we have to add back
     -- the names
-    let binderNames := ((lambdaBinders bij.pack bij.unpack.size).map (·.1)).toArray
+    let binderNames := lambdaBinderNames bij.pack bij.unpack.size
     let (mvars, _, goalBody) ← lambdaMetaTelescope bij.pack bij.unpack.size
     reverted.assign goalBody
     let goalInfo ← (mvars.zip binderNames).mapM fun (mvar, name) => do

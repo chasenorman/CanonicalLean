@@ -13,13 +13,14 @@ namespace Destruct
 public section
 
 /-- Forward and backwards maps between instances of `A` and `B`, where `A` is a
-    sort appearing in a premise or goal that we wish to replace with `B`.
--/
+    sort appearing in a premise or goal that we wish to replace with `B`. -/
 structure Translation (A : Sort u) (B : Sort v) where
   f : A → B
   g : B → A
 
-/-- TODO: -/
+/-- `Translation` meta-objects that are computable expressions. This structure
+    stores the necessary info (levels, type, etc.) in order to instantiate the
+    value.  -/
 structure MetaTranslation where
   f : Expr
   g : Expr
@@ -77,9 +78,3 @@ def translate_unit : Translation Unit Unit' :=
 
 def translate_punit : Translation PUnit Unit' :=
   ⟨fun _ => Unit'.mk, fun _ => PUnit.unit⟩
-
--- Ideas:
--- x ∈ A ∩ B ↔ x ∈ A ∧ x ∈ B (same thing for ∨ and \ operators)
--- Set equality via double containment (actually this is provided by ext)
--- Unfolding the subseteq definition
--- Translating decidable propositions?

@@ -33,11 +33,10 @@ def apply (fn : Expr) (arg : Expr) : Expr :=
 def applyN (fn : Expr) (args : Array Expr) : Expr :=
   (mkAppN fn args).headBeta
 
-def lambdaBinders (lam : Expr) (n : Nat) : List (Name × Expr) :=
-  if n == 0 then [] else
-  match lam with
-  | .lam name type body _ => (name, type)::lambdaBinders body (n-1)
-  | _ => panic! s!"Destruct.lambdaBinders expected a lambda, got {lam}"
+def lambdaBinderNames (lam : Expr) (n : Nat) (result : Array Name := #[]) : Array Name :=
+  match lam, n with
+  | .lam name _ body _, .succ n => lambdaBinderNames body n (result.push name)
+  | _, _ => result
 
 partial def packTelescope {α} (info : List (Bijection × Expr)) (k : Array Expr → Array Expr → MetaM α)
   (context : Array Expr := #[]) (vars : Array Expr := #[]) (packeds : Array Expr := #[]) : MetaM α := do
@@ -49,12 +48,12 @@ partial def packTelescope {α} (info : List (Bijection × Expr)) (k : Array Expr
   | [] => k vars packeds
 
 partial def lambdaBoundedTelescopeDestruct {α} (lam : Expr) (n : Nat) (vars : Array Expr) (k : Array Expr → Expr → MetaM α) (fs : Array Expr := #[]) : MetaM α :=
-  match (lam, n) with
-  | (.lam name type body _, .succ n) => do
+  match lam, n with
+  | .lam name type body _, .succ n => do
     let pi ← mkForallFVars vars type
     withLocalDeclD name pi fun f => do
       lambdaBoundedTelescopeDestruct (body.instantiate1 (mkAppN f vars)) n vars k (fs.push f)
-  | _ => k fs lam
+  | _, _ => k fs lam
 
 def prefixName (binderName : Name) (userName : Name) : Name :=
   if binderName.isInternal then userName
