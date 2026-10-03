@@ -41,11 +41,7 @@ def getRefinementStr (params : InsertParams) : RequestM (RequestTask String) :=
       let expr ← data.processedGoal.withContext do
         data.reconstruct (← fromCanonical (← getRefinement) (← data.processedGoal.getType))
 
-      data.mainGoal.withContext do
-        let tm ← Lean.Meta.Tactic.TryThis.delabToRefinableSyntax expr
-        let stx ← `(tactic| refine $tm)
-        let fmt ← Lean.PrettyPrinter.ppCategory `tactic stx
-        pure (Std.Format.pretty fmt data.width data.indent data.column)
+      data.mainGoal.withContext do leanString expr true
 
 /-- The widget for the refinement UI. -/
 @[widget_module]

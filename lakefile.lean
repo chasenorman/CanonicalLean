@@ -12,6 +12,7 @@ def buildArchive :=
   else "linux_x86"
 
 package Canonical where
+  releaseRepo := "https://github.com/chasenorman/CanonicalLean"
   preferReleaseBuild := true
   buildArchive := buildArchive ++ ".tar.gz"
 

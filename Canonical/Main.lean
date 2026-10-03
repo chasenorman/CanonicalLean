@@ -57,14 +57,13 @@ def getPremises (goal : MVarId) (consts : Array Name) (config : Config) : MetaM 
 
 def preprocess (goal : MVarId) (config : Config) (structs : Array Name) : MetaM (MVarId × (Lean.Expr → MetaM Lean.Expr)) := do
   if config.destruct then
-    if let some (goal, reconstruct) ← Destruct.destructCanonical goal structs then
-      return (goal, reconstruct)
+    return ← Destruct.destructCanonical goal structs
   return (goal, pure)
 
 /-- Run Canonical asynchronously, so that we can check for cancellation. -/
 def runCanonical (decl : Decl) (timeout : UInt64) (config : Config) : MetaM CanonicalResult := do
   checkInterrupted
-  let task ← IO.asTask (prio := .dedicated) (canonical decl timeout config.count)
+  let task ← IO.asTask (prio := .dedicated) (canonical decl timeout config.count.toUSize)
   while !(← IO.hasFinished task) do
     if ← interrupted then
       cancel
