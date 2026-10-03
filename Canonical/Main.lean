@@ -57,8 +57,7 @@ def getPremises (goal : MVarId) (consts : Array Name) (config : Config) : MetaM 
 
 def preprocess (goal : MVarId) (config : Config) (structs : Array Name) : MetaM (MVarId × (Expr → MetaM Expr)) := do
   if config.destruct then
-    if let some (goal, reconstruct) ← Destruct.destructCanonical goal structs then
-      return (goal, reconstruct)
+    return ← Destruct.destructCanonical goal structs
   return (goal, pure)
 
 /-- Run Canonical asynchronously, so that we can check for cancellation. -/
