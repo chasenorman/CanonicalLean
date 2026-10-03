@@ -48,8 +48,9 @@ def MetaTranslation.make (info : ConstantInfo) : OptionT MetaM MetaTranslation :
     | ``Translation => some (packed)
     | _ => none
 
-    let f ← mkLambdaFVars fvars (← unfoldApply (← project? packed 0))
-    let g ← mkLambdaFVars fvars (← unfoldApply (← project? packed 1))
+    let isProj := ((← getEnv).isProjectionFn ·)
+    let f ← mkLambdaFVars fvars (← deltaExpand (← unfoldApply (← project? packed 0)) isProj (allowOpaque := true))
+    let g ← mkLambdaFVars fvars (← deltaExpand (← unfoldApply (← project? packed 1)) isProj (allowOpaque := true))
 
     return { f, g, type := info.type, levels := info.levelParams }
 

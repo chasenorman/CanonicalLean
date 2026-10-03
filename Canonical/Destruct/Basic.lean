@@ -123,6 +123,12 @@ partial def destructMain (t : Expr) (binderName : Name) : DestructM Bijection :=
   | _ => return destructTrivial t binderName
 end
 
+def reduceProjs (e : Expr) : MetaM Expr :=
+  Meta.transform e (post := fun e => do
+    let .proj _ i s := e | return .done e
+    let some r ← projectCore? s.headBeta i | return .done e
+    return .visit r)
+
 -- Interfaces
 partial def destructTactic (goal : MVarId) (context : Context) : MetaM (Array (Array FVarId × MVarId) × Bool) := do
   let toRevert ← goal.withContext do
@@ -138,7 +144,7 @@ partial def destructTactic (goal : MVarId) (context : Context) : MetaM (Array (A
     -- Note: lambdaMetaTelescope doesn't preserve names, so we have to add back
     -- the names
     let binderNames := lambdaBinderNames bij.pack bij.unpack.size
-    let (mvars, _, goalBody) ← lambdaMetaTelescope bij.pack bij.unpack.size
+    let (mvars, _, goalBody) ← lambdaMetaTelescope (← reduceProjs bij.pack) bij.unpack.size
     reverted.assign goalBody
     let goalInfo ← (mvars.zip binderNames).mapM fun (mvar, name) => do
       mvar.mvarId!.setUserName name
@@ -159,6 +165,6 @@ def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (E
     let result := destruct.1[0]!
     let ⟨_, _, assignment⟩ := ← abstractMVars
       (← instantiateMVars (← getExprMVarAssignment? goal).get!)
-    let assignment ← betaReduce assignment
+    let assignment ← reduceProjs (← betaReduce assignment)
     return (result.2, fun x => do
-      betaReduce (Canonical.apply assignment [← mkLambdaFVars (result.1.map .fvar) x]))
+      reduceProjs (← betaReduce (Canonical.apply assignment [← mkLambdaFVars (result.1.map .fvar) x])))
