@@ -3,8 +3,6 @@ module
 import Lean
 import Canonical.Util
 import Canonical.Symbols
-public import Lean.Meta.Basic
-public meta import Canonical.Destruct.Util
 public import Canonical.Destruct.Translation
 
 open Lean Core Meta
@@ -49,10 +47,8 @@ def matchTranslation (t : Expr) : DestructM (Option (Expr × Expr × Expr)) := w
     let levels ← mkFreshLevelMVars mt.levels.length
     let type := mt.type.instantiateLevelParams mt.levels levels
     let (mvars, _, translation) ← forallMetaTelescope type
-    let pattern := translation.getAppArgs[0]!
-    let replace := translation.getAppArgs[1]!
-    if ← isDefEqGuarded t pattern then
-      let replaced ← instantiateMVars replace
+    if ← isDefEqGuarded t (translation.getAppArgs[0]!) then
+      let replaced ← instantiateMVars (translation.getAppArgs[1]!)
       let f := mt.f.instantiateLevelParams mt.levels levels
       let f ← instantiateMVars (applyN f mvars)
       let g := mt.g.instantiateLevelParams mt.levels levels
@@ -62,8 +58,7 @@ def matchTranslation (t : Expr) : DestructM (Option (Expr × Expr × Expr)) := w
 
 mutual
 partial def destructFVar (fvar : Expr) (binderName : Name) : DestructM Bijection := do
-  let lctx ← getLCtx
-  let info := lctx.get! fvar.fvarId!
+  let info := (← getLCtx).get! fvar.fvarId!
   let name := prefixName binderName info.userName
   destructMain info.type name
 
@@ -72,8 +67,8 @@ partial def destructStruct (t : Expr) (binderName : Name)
   lambdaBoundedTelescope builtinCtor numFields fun fvars packed => do
     let bijs ← fvars.mapM (destructFVar · binderName)
 
-    let pack ← packTelescope (bijs.zip fvars).toList fun vars packeds => do
-      mkLambdaFVars vars (packed.replaceFVars fvars packeds)
+    let pack ← packTelescope (bijs.zip fvars).toList fun vars packs => do
+      mkLambdaFVars vars (packed.replaceFVars fvars packs)
 
     let unpack ← withLocalDecl binderName .default t fun fvar => do
       let projs := Array.ofFn (n := numFields) (.proj structName · fvar)
@@ -84,8 +79,8 @@ partial def destructStruct (t : Expr) (binderName : Name)
 
     return { pack, unpack, madeProgress := true }
 
-partial def destructPi (t : Expr) (binderName : Name)
-  (inputName : Name) (inputType : Expr) (outputType : Expr) (inputInfo : BinderInfo) : DestructM Bijection := do
+partial def destructPi (t : Expr) (binderName : Name) (inputName : Name) (inputType : Expr)
+  (outputType : Expr) (inputInfo : BinderInfo) : DestructM Bijection := do
   let input ← destructMain inputType inputName
   lambdaBoundedTelescope input.pack input.unpack.size fun vars packed => do
     let output ← destructMain (outputType.instantiate1 packed) binderName
@@ -98,7 +93,8 @@ partial def destructPi (t : Expr) (binderName : Name)
         let replaced := body.replaceFVars vars (input.unpack.map (apply · var))
         mkLambdaFVars (fs.push var) replaced
 
-    return { pack, unpack, arities := input.unpack.size :: output.arities, madeProgress := input.madeProgress || output.madeProgress }
+    return { pack, unpack, arities := input.unpack.size :: output.arities,
+              madeProgress := input.madeProgress || output.madeProgress }
 
 partial def destructTranslation (t : Expr) (binderName : Name) : DestructM Bijection := do
   let .some (translated, f, g) ← matchTranslation t | return destructTrivial t binderName
@@ -110,12 +106,9 @@ partial def destructTranslation (t : Expr) (binderName : Name) : DestructM Bijec
   return { pack, unpack, madeProgress := true }
 
 partial def destructApp (t : Expr) (binderName : Name) (headFn : Expr) (headArgs : Array Expr) : DestructM Bijection := do
-  if headFn.constName?.isNone then return destructTrivial t binderName
-  let headName := headFn.constName!
-  let env ← getEnv
-
+  let .some headName := headFn.constName? | return destructTrivial t binderName
   if (← read).structures.contains headName then
-    if let .some info := getStructureInfo? env headName then
+    if let .some info := getStructureInfo? (← getEnv) headName then
       let induct ← getConstInfoInduct headName
       if induct.isRec then return destructTrivial t binderName
       let ctor ← etaExpand (.const induct.ctors[0]! headFn.constLevels!)
@@ -163,8 +156,7 @@ def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (E
     let next := (← goal.apply (Canonical.apply dneg [typ]))[0]!
     let context ← Context.populate (names ++ consts)
     let destruct ← destructTactic next context
-    let destruct := destruct.1
-    let result := destruct[0]!
+    let result := destruct.1[0]!
     let ⟨_, _, assignment⟩ := ← abstractMVars
       (← instantiateMVars (← getExprMVarAssignment? goal).get!)
     let assignment ← betaReduce assignment

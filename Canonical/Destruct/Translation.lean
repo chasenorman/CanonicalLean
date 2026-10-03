@@ -1,12 +1,9 @@
 module
 
 import Lean
-public import Lean.Expr
-public import Lean.Meta.Tactic.Ext
-public import Lean.Meta.Basic
 public import Canonical.Destruct.Util
 
-open Std Lean Core Meta
+open Lean Meta
 
 namespace Destruct
 
@@ -29,8 +26,7 @@ structure MetaTranslation where
 
 partial def unfoldApply (e : Expr) : MetaM Expr := do
   let e ← whnf e
-  let fn := e.getAppFn
-  let .const name us := fn | return e
+  let .const name us := e.getAppFn | return e
   let info := ((← getEnv).find? name).get!
   let value := info.value! (allowOpaque := true)
   let value := value.instantiateLevelParams info.levelParams us
@@ -39,28 +35,23 @@ partial def unfoldApply (e : Expr) : MetaM Expr := do
 def iff_to_translation {A B} (h : A ↔ B) : Translation A B :=
   ⟨h.mp, h.mpr⟩
 
-instance [Monad m] : MonadLift Option (OptionT m) where
+instance {m} [Monad m] : MonadLift Option (OptionT m) where
   monadLift o := (pure o : m _)
 
 def MetaTranslation.make (info : ConstantInfo) : OptionT MetaM MetaTranslation := do
   let value ← info.value? (allowOpaque := true)
   let head := info.type.getForallBody
   let .const headName headLevels := head.getAppFn | failure
-  if headName != ``Iff && headName != ``Translation then failure
-  let isIff := headName == ``Iff
   lambdaTelescope value fun fvars packed => do
-    let packed := if isIff then
-      mkAppN (.const ``iff_to_translation headLevels) (head.getAppArgs.push packed)
-    else
-      packed
-    let f ← unfoldApply (← project? packed 0)
-    let g ← unfoldApply (← project? packed 1)
-    return {
-      f := ← mkLambdaFVars fvars f,
-      g := ← mkLambdaFVars fvars g,
-      type := info.type,
-      levels := info.levelParams
-    }
+    let packed ← match headName with
+    | ``Iff => some (mkAppN (.const ``iff_to_translation headLevels) (head.getAppArgs.push packed))
+    | ``Translation => some (packed)
+    | _ => none
+
+    let f ← mkLambdaFVars fvars (← unfoldApply (← project? packed 0))
+    let g ← mkLambdaFVars fvars (← unfoldApply (← project? packed 1))
+
+    return { f, g, type := info.type, levels := info.levelParams }
 
 noncomputable def translate_exists (α : Sort u) (p : α → Prop) : Translation (Exists p) { x : α // p x } :=
   ⟨

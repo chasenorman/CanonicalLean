@@ -1,10 +1,10 @@
 module
 
-import Lean
-public import Lean.Expr
+import Lean.Structure
+import Lean.ProjFns
 public import Lean.Meta.Basic
 
-open Lean Core Meta
+open Lean Meta
 
 namespace Destruct
 
@@ -39,19 +39,18 @@ def lambdaBinderNames (lam : Expr) (n : Nat) (result : Array Name := #[]) : Arra
   | _, _ => result
 
 partial def packTelescope {α} (info : List (Bijection × Expr)) (k : Array Expr → Array Expr → MetaM α)
-  (context : Array Expr := #[]) (vars : Array Expr := #[]) (packeds : Array Expr := #[]) : MetaM α := do
+  (context : Array Expr := #[]) (vars : Array Expr := #[]) (packs : Array Expr := #[]) : MetaM α := do
   match info with
-  | (bij, fvar)::info =>
-    let pack := bij.pack.replaceFVars context packeds
+  | (bij, x)::info =>
+    let pack := bij.pack.replaceFVars context packs
     lambdaBoundedTelescope pack bij.unpack.size fun newVars packed => do
-      packTelescope info k (context.push fvar) (vars ++ newVars) (packeds.push packed)
-  | [] => k vars packeds
+      packTelescope info k (context.push x) (vars ++ newVars) (packs.push packed)
+  | [] => k vars packs
 
 partial def lambdaBoundedTelescopeDestruct {α} (lam : Expr) (n : Nat) (vars : Array Expr) (k : Array Expr → Expr → MetaM α) (fs : Array Expr := #[]) : MetaM α :=
   match lam, n with
   | .lam name type body _, .succ n => do
-    let pi ← mkForallFVars vars type
-    withLocalDeclD name pi fun f => do
+    withLocalDeclD name (← mkForallFVars vars type) fun f => do
       lambdaBoundedTelescopeDestruct (body.instantiate1 (mkAppN f vars)) n vars k (fs.push f)
   | _, _ => k fs lam
 
