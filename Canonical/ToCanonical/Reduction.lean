@@ -5,7 +5,7 @@ public import Lean.Meta.Basic
 public import Lean.ProjFns
 import Canonical.Util
 
-open Lean hiding Term
+open Lean
 open Meta Std
 
 namespace Canonical
@@ -15,8 +15,8 @@ public section
 /-- Placeholder for a term, not a reserved symbol. -/
 def wildcard : Canonical.Expr := { spine := { head := "*" } }
 
-/-- Creates an η-**short** Term applying `v` at the head. -/
-def varToTerm (v : Decl) : Canonical.Expr := { spine := { head := v.name } }
+/-- Creates an η-**short** `Expr` applying `d` at the head. -/
+def Decl.toExpr (d : Decl) : Canonical.Expr := { spine := { head := d.name } }
 
 partial def containsLambda (t : Canonical.Expr) : Bool :=
   !t.params.isEmpty || t.spine.args.any containsLambda
@@ -45,16 +45,16 @@ def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (construc
 /-- Rule corresponding to ι-reduction -/
 def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (constructorVal : ConstructorVal) (rhs : Canonical.Expr) : Rule :=
   let ctorStart := (recVal.numParams+recVal.numMotives+recVal.numMinors);
-  let args : Array Canonical.Expr := (rhs.params.shrink ctorStart).map varToTerm
-  let ctorArgs : Array Canonical.Expr := (rhs.params.toSubarray ctorStart (ctorStart + constructorVal.numFields)).toArray.map varToTerm
+  let args : Array Canonical.Expr := (rhs.params.shrink ctorStart).map Decl.toExpr
+  let ctorArgs : Array Canonical.Expr := (rhs.params.toSubarray ctorStart (ctorStart + constructorVal.numFields)).toArray.map Decl.toExpr
   let major : Spine := { head := constructor.toString, args := Array.replicate constructorVal.numParams wildcard ++ ctorArgs}
-  let args : Array Canonical.Expr := (args ++ Array.replicate recVal.numIndices wildcard).push { spine := major}
-  let args := args ++ (rhs.params.toSubarray (ctorStart + constructorVal.numFields)).toArray.map varToTerm
+  let args : Array Canonical.Expr := (args ++ Array.replicate recVal.numIndices wildcard).push { spine := major }
+  let args := args ++ (rhs.params.toSubarray (ctorStart + constructorVal.numFields)).toArray.map Decl.toExpr
   ⟨{head := recursor.toString, args := args }, rhs.spine, #[], true⟩
 
 /-- Rule corresponding to δ-reduction. -/
 def defRule (name : String) (defn : Canonical.Expr) : Rule :=
-  ⟨{ head := name, args := defn.params.map varToTerm }, defn.spine, #[], false⟩
+  ⟨{ head := name, args := defn.params.map Decl.toExpr }, defn.spine, #[], false⟩
 
 /-- Rules for the equality of distinct constructors to reduce to `False`. -/
 def reduceCtorEqRules (ind : Name) (info : InductiveVal) : MetaM (Array Rule) := do

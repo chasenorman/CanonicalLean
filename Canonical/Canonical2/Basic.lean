@@ -52,11 +52,11 @@ def automateCanonical (original : MVarId) (suggestions : Array Name) (timeout : 
   let goal ← original.clone
   let (premises, structs) ← Canonical.getPremises goal #[] config
   let (goal', reconstruct) ← Canonical.preprocess goal config structs
-  let type ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
-    Canonical.toCanonical (← goal'.getType) (suggestions ++ premises) (structs.push ``Canonical.Pi) config
-  if (← IO.checkCanceled) then throwError "canceled"
   let name := ((← getMCtx).findDecl? goal).get!.userName.toString
-  let result ← Canonical.canonical { type, name } timeout config.count.toUSize
+  let decl ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
+    Canonical.toCanonical name (← goal'.getType) (suggestions ++ premises) (structs.push ``Canonical.Pi) config
+  if (← IO.checkCanceled) then throwError "canceled"
+  let result ← Canonical.canonical decl timeout config.count.toUSize
   if (← IO.checkCanceled) then throwError "canceled"
   let proofs ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
     let proofs ← result.terms.mapM fun term => do Canonical.fromCanonical term (← goal'.getType)

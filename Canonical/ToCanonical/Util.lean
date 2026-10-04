@@ -14,14 +14,13 @@ namespace Canonical
 
 public section
 
-/-- Definition of a symbol during translation,
-    to be converted into `(Let × Option Typ)` -/
+/-- Definition of a symbol during translation, to be converted into a `Decl`. -/
 structure Definition where
   /-- `.undef` corresponds to a definition without translated type,
       but may acquire one as the translation progresses. -/
   type: LOption Canonical.Expr
   arity: Arity
-  rules: Array Rule := #[]
+  equations: Array Rule := #[]
   neighbors: HashSet String := {}
 deriving Inhabited
 
@@ -53,11 +52,14 @@ structure State where
 
 abbrev ToCanonicalM := ReaderT Context $ StateRefT State MonoM
 
-def toVar (e : Lean.Expr) : MetaM Decl := do pure { name := ← toNameString e }
+def modifyDefinition (key : String) (f : Definition → Definition) : ToCanonicalM Unit :=
+  modify fun state => { state with definitions := state.definitions.insert key (f (state.definitions.find? key).get!) }
 
-def setType (key : String) (typ : LOption Canonical.Expr) : ToCanonicalM Unit := do
-  modify fun state => { state with definitions := state.definitions.insert key {
-    (state.definitions.find? key).get! with type := typ } }
+def setType (key : String) (type : LOption Canonical.Expr) : ToCanonicalM Unit :=
+  modifyDefinition key ({ · with type })
+
+def addEquations (key : String) (equations : Array Rule) : ToCanonicalM Unit :=
+  modifyDefinition key fun defn => { defn with equations := defn.equations ++ equations }
 
 def MAX_TYPES := 100
 
@@ -120,10 +122,12 @@ def elimSpecial (e : Lean.Expr) : MetaM Lean.Expr := do
 
 /-- Defines the `<synthInstance>` symbol with type `<instImplicit>`. -/
 def defineInstance (inhabited : Bool := true) : ToCanonicalM Canonical.Expr := do
-  let typ : Canonical.Expr := { spine := { head := "<instImplicit>" } }
-  modify (fun s => { s with definitions := (
-    (s.definitions.insert "<instImplicit>" { arity := {}, type := .none }).insert "<synthInstance>" { arity := {}, type := .some typ } ).insert "<instUninhabited>" { arity := {}, type := .none } })
-  return if inhabited then typ else { spine := { head := "<instUninhabited>" } }
+  let type : Canonical.Expr := { spine := { head := "<instImplicit>" } }
+  modify fun s => { s with definitions := s.definitions |>
+      (·.insert "<instImplicit>" { arity := {}, type := .none }) |>
+      (·.insert "<synthInstance>" { arity := {}, type := .some type }) |>
+      (·.insert "<instUninhabited>" { arity := {}, type := .none }) }
+  return if inhabited then type else { spine := { head := "<instUninhabited>" } }
 
 def monomorphizePremise (name : Name) : ToCanonicalM (Bool × Array (Lean.Expr × Lean.Expr × Name)) := do
   let info ← getConstInfo name

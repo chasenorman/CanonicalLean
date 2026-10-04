@@ -25,7 +25,7 @@ run_cmd
   for name in #["Lean", "Lake", "Qq"] do
     modifyEnv fun env => nameDenyListExt.addEntry env name
 
-private structure Premise where
+structure Premise where
   name: Name
   decl: String
 deriving ToJson
@@ -68,7 +68,7 @@ private def selectPremises (modules : Array Name) (declarations : Array Premise)
     ("goal", toJson goal),
     ("k", toJson k)])
 
-private def getKind (cinfo : ConstantInfo) : MetaM String := do
+def getKind (cinfo : ConstantInfo) : MetaM String := do
   let env ← getEnv
   return match cinfo with
     | .axiomInfo _  => "axiom"
@@ -81,7 +81,7 @@ private def getKind (cinfo : ConstantInfo) : MetaM String := do
       else "inductive"
     | .ctorInfo _ | .recInfo _ | .quotInfo _ => "def"
 
-private def toPremise (name : Name) : MetaM (Option Premise) := do
+def toPremise (name : Name) : MetaM (Option Premise) := do
   if isDeniedPremise (← getEnv) name then return none
   withCurrHeartbeats do try
     let kind ← getKind (← getConstInfo name)

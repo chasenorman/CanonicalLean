@@ -9,7 +9,8 @@ namespace Canonical
 public section
 
 mutual
-  /-- A let binding is a variable binding with reduction rules. -/
+  /-- A variable binding, used for parameters, let bindings, and the goal.
+      `equations` are reduction rules for the variable. -/
   structure Decl where
     name: String
     type: Option Expr := none
@@ -26,8 +27,8 @@ mutual
     premiseRules : Array String := #[]
   deriving Inhabited, Repr
 
-  /-- A term is an n-ary, β-normal, η-long λ expression:
-      `λ params lets . spine` -/
+  /-- An n-ary, β-normal, η-long expression `λ params lets . spine`.
+      When the `params` carry types, it is read as the Π-type `Π params lets . spine`. -/
   structure Expr where
     params: Array Decl := #[]
     lets: Array Decl := #[]
@@ -53,11 +54,8 @@ end
 @[never_extract, extern "spine_to_string"] opaque spineToString: @& Spine → String
 instance : ToString Spine where toString := spineToString
 
--- @[never_extract, extern "term_to_string"] opaque termToString: @& Term → String
--- instance : ToString Term where toString := termToString
-
-@[never_extract, extern "typ_to_string"] opaque typToString: @& Expr → String
-instance : ToString Expr where toString := typToString
+@[never_extract, extern "typ_to_string"] opaque exprToString: @& Expr → String
+instance : ToString Expr where toString := exprToString
 
 @[never_extract, extern "rule_to_string"] opaque ruleToString: @& Rule → String
 instance : ToString Rule where toString := ruleToString

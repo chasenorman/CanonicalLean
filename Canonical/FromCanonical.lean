@@ -12,7 +12,7 @@ public section
 
 open Lean Std Meta Syntax
 
-/-- When translating from Canonical, we associate names in the `Term` with corresponding Lean `FVarId`s -/
+/-- When translating from Canonical, we associate names in the `Expr` with corresponding Lean `FVarId`s -/
 abbrev FromCanonicalM := StateT (HashMap String FVarId) MetaM
 
 /-- Converts instances of `Pi.mk` and `Pi.f` at the head into λ-expressions and applications, respectively. -/
@@ -104,7 +104,7 @@ mutual
       return arg :: (← fromApp tail (body.instantiate1 arg))
 end
 
-/-- Converts a Term `t` of type `type` to a Lean expression. -/
+/-- Converts a term `t` of type `type` to a Lean expression. -/
 def fromCanonical (t : Canonical.Expr) (type : Lean.Expr) : MetaM Lean.Expr := do
   return ← (fromTerm t type).run' (← (← getLCtx).foldlM (fun acc decl =>
     do pure (acc.insert (← toHead decl.toExpr).1.toString decl.fvarId)) {})

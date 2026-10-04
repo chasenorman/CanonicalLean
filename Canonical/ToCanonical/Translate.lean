@@ -5,7 +5,7 @@ import Canonical.ToCanonical.Reduction
 import Canonical.Symbols
 import Lean
 
-open Lean hiding Term
+open Lean
 open Meta Expr Std Monomorphize
 
 namespace Canonical
@@ -13,30 +13,33 @@ namespace Canonical
 public section
 
 mutual
-  /-- Convert a type `Expr` `e` to a `Typ`. -/
-  partial def toTyp (e : Lean.Expr) : ToCanonicalM Canonical.Expr := withIncRecDepth do
+  /-- Translate a type `e` to a Π-type `Expr` -/
+  partial def toType (e : Lean.Expr) : ToCanonicalM Canonical.Expr := withIncRecDepth do
     forallTelescopeReducing e (whnfType := true) fun xs body => do
       let ids := xs.map (·.fvarId!)
       let arities ← ids.mapM (fun id => do pure (id, ← typeArity (← id.getType)))
       withReader (fun ctx => { ctx with arities := ctx.arities.insertMany arities } ) do
         let universal := body.getAppFn.hasAnyFVar (fun x => xs.contains (.fvar x))
         let params ← withReader (fun ctx => { ctx with polarity := flip ctx.polarity }) do
-          ids.mapM (fun x => do pure { ← toVar (.fvar x) with type := ← toBind x !universal })
+          ids.mapM (toDecl · !universal)
         return { params, spine := ← toSpine body }
 
-  /-- Obtain the `Option Typ` binder type for an `FVarId`. -/
-  partial def toBind (id : FVarId) (inhabited : Bool := true) : ToCanonicalM (Option Canonical.Expr) := withIncRecDepth do
-    if (← id.getType).getAppFnArgs.1 == ``STAR then
-      return none
+  partial def toDecl (id : FVarId) (inhabited : Bool := true) : ToCanonicalM Decl := withIncRecDepth do
+    let name ← toNameString (.fvar id)
+    let type ← id.getType
+    if let some value ← id.getValue? then
+      return { name, equations := #[defRule name (← toTerm value type (← typeArity type).params.toList)] }
+    if type.getAppFnArgs.1 == ``STAR then
+      return { name }
     if (← id.getBinderInfo).isInstImplicit && (← read).config.monomorphize then
       match (← read).polarity with
       | .premise =>
         let _ ← addFVarAsCandidate id
-        return none
-      | .goal => return some (← defineInstance inhabited)
-    return some (← toTyp (← id.getType))
+        return { name }
+      | .goal => return { name, type := ← defineInstance inhabited }
+    return { name, type := ← toType type }
 
-  /-- Translate an `Expr` `e` of type `type` to a `Term`.
+  /-- Translate a term `e` of type `type` to a λ-`Expr`
       `arities` are the expected parameter arities, `params` accumulate via recursive calls. -/
   partial def toTerm (e : Lean.Expr) (type : Lean.Expr) (arities : List Arity) (synthInst : Bool := true) (params : Array Decl := #[]) : ToCanonicalM Canonical.Expr := withIncRecDepth do
     match ← withTransparency .all do whnf type with
@@ -50,7 +53,7 @@ mutual
             toTerm e (← inferType e) [] synthInst params
         | arity :: arities =>
           withReader (fun ctx => { ctx with arities := ctx.arities.insert fvar.fvarId! arity }) do
-            toTerm (app e fvar) (body.instantiate1 fvar) arities synthInst (params.push (← toVar fvar))
+            toTerm (app e fvar) (body.instantiate1 fvar) arities synthInst (params.push { name := ← toNameString fvar })
     | _ =>
       assert! arities.isEmpty
       return { params, spine := ← toSpine (← whnf e) synthInst }
@@ -113,7 +116,7 @@ mutual
       if defn.type matches .undef && defineType && type.getAppFnArgs.1 != ``STAR then
         let _ ← setType name .none
         modify (fun state => { state with numTypes := state.numTypes + 1 })
-        let type ← toTyp type
+        let type ← toType type
         let _ ← setType name (.some type)
         let _ ← onType
       return defn.arity
@@ -125,10 +128,7 @@ mutual
     let success ← addConstraints rules
     if !success then
       logWarning s!"Rules {rules} for {name} are non-terminating."
-    else modify fun state =>
-      let defn := (state.definitions.find? name.toString).get!
-      { state with definitions := state.definitions.insert name.toString { defn with rules := defn.rules ++ rules } }
-    pure ()
+    else addEquations name.toString rules
 
   /-- Determine the rules for constant `name` -/
   partial def constRules (name : Name) : ToCanonicalM (Array Rule) := withIncRecDepth do
@@ -187,12 +187,7 @@ mutual
           let success ← addConstraints rules
           assert! success
 
-        modify (fun x =>
-          let eq := (x.definitions.find? (`Eq).toString).get!
-          let new := x.definitions.insert (`Eq).toString
-            { eq with rules := eq.rules ++ rules }
-          { x with definitions := new }
-        )
+        addEquations (``Eq).toString rules
 
         if let some info := getStructureInfo? env name then
           for field in info.fieldInfo do

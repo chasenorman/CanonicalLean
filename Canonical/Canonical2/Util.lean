@@ -80,7 +80,7 @@ partial def explicitConstants : Expr → MetaM (NameSet)
 
 def collectConstants (s : Syntax) (goal : MVarId) : MetaM NameSet := goal.withContext do
   match s with
-  | .ident _ _ _ _ => do return NameSet.ofArray (← realizeGlobalConst s).head?.toArray
+  | .ident .. => return NameSet.ofArray ((← try realizeGlobalConst s catch _ => pure []).head?.toArray)
   | .node _ k args => do
     if (`Lean.Parser.Term).isPrefixOf k then try
         let e ← TermElabM.run' (ctx := { errToSorry := false }) do elabTerm s none

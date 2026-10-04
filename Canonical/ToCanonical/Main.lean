@@ -5,7 +5,7 @@ import Canonical.ToCanonical.Translate
 import Canonical.ToCanonical.Reduction
 import Lean
 
-open Lean hiding Term
+open Lean
 open Meta Expr Std Monomorphize
 
 namespace Canonical
@@ -18,13 +18,7 @@ def registerSimpPremise (attribution : String) (type : Lean.Expr) : ToCanonicalM
   if (← read).config.simp then
     if let some rule ← toRule #[attribution] type false then
       if ← addConstraints #[rule] then
-        modify fun s =>
-          let defn := (s.definitions.find? rule.lhs.head).get!
-          { s with
-            definitions := s.definitions.insert rule.lhs.head { defn with
-              rules := defn.rules.push rule
-            }
-          }
+        addEquations rule.lhs.head #[rule]
         return true
   return false
 
@@ -49,22 +43,14 @@ def addSimpLemmas : ToCanonicalM Unit := do
           attempted := attempted.insert thm
           let _ ← definePremise thm true
 
-def toCanonical_ (goal : Lean.Expr) (premises : Array Name) : ToCanonicalM Canonical.Expr := do
+def toCanonical_ (name : String) (goal : Lean.Expr) (premises : Array Name) : ToCanonicalM Decl := do
   -- Local Context
-  let lets : Array Decl := ← withReader (fun ctx => { ctx with polarity := .premise }) do
-    (← getLCtx).foldlM (fun lets decl => do
-      if !decl.isAuxDecl then
-        let (name, type) ← toHead decl.toExpr
-        if let some value := decl.value? then
-          let rule := defRule name.toString (← toTerm value type (← typeArity type).params.toList)
-          pure (lets.push { name := name.toString, equations := #[rule], type := none})
-        else
-          pure (lets.push { name := name.toString, type := ← toBind decl.fvarId })
-      else pure lets
-    ) #[]
+  let lets ← withReader (fun ctx => { ctx with polarity := .premise }) do
+    (← getLCtx).foldlM (init := #[]) fun lets decl =>
+      if decl.isAuxDecl then pure lets else lets.push <$> toDecl decl.fvarId
 
   -- Goal Type
-  let typ ← toTyp goal
+  let type ← toType goal
 
   -- Constant Symbol Premises
   withReader (fun ctx => { ctx with polarity := .premise }) do
@@ -75,16 +61,17 @@ def toCanonical_ (goal : Lean.Expr) (premises : Array Name) : ToCanonicalM Canon
   if (← read).config.simp then
     let _ ← addSimpLemmas
 
-  let lets := lets ++ (← get).definitions.toList.toArray.map fun ⟨name, defn⟩ => { name, equations := defn.rules, type := defn.type.toOption }
+  let lets := lets ++ (← get).definitions.toList.toArray.map fun ⟨name, defn⟩ =>
+    { name, equations := defn.equations, type := defn.type.toOption }
 
   let _ ← finalizeMonos
 
-  return { typ with lets := lets ++ typ.lets }
+  return { name, type := some { type with lets := lets ++ type.lets } }
 
-/-- Convert `goal` to a `Typ` with `premises` and all included definitions. -/
-def toCanonical (goal : Lean.Expr) (premises : Array Name) (structures : Array Name) (config : Config) : MetaM Canonical.Expr := do
+/-- Convert `goal` to a `Decl` named `name`, with `premises` and all included definitions. -/
+def toCanonical (name : String) (goal : Lean.Expr) (premises : Array Name) (structures : Array Name) (config : Config) : MetaM Decl := do
   let lctx ← getLCtx
-  (((toCanonical_ goal premises).run
+  (((toCanonical_ name goal premises).run
     {
       arities := ← lctx.foldlM (fun arities decl => do
         pure (arities.insert decl.fvarId (← typeArity decl.type)))
