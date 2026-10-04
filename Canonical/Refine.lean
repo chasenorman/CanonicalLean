@@ -16,7 +16,7 @@ structure RpcData where
   processedGoal: MVarId
   mctx: MetavarContext
   mainGoal: MVarId
-  reconstruct: Expr → MetaM Expr
+  reconstruct: Lean.Expr → MetaM Lean.Expr
   width: Nat
   indent: Nat
   column: Nat
@@ -30,7 +30,7 @@ structure InsertParams where
 deriving Server.RpcEncodable
 
 /-- Obtains the current term from the refinement UI. -/
-@[never_extract, extern "get_refinement"] opaque getRefinement : IO Term
+@[never_extract, extern "get_refinement"] opaque getRefinement : IO Canonical.Expr
 
 /-- Gets the String to be inserted into the document, for the refinement widget. -/
 @[server_rpc_method]

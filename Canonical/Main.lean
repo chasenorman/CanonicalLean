@@ -15,7 +15,7 @@ open Lean Parser Tactic Meta Elab Tactic Core LibrarySuggestions
 
 /-- The return type of Canonical, with the generated `terms`. -/
 structure CanonicalResult where
-  terms: Array Term
+  terms: Array Canonical.Expr
   attempted_resolutions: UInt32
   successful_resolutions: UInt32
   steps: UInt32
@@ -24,13 +24,13 @@ structure CanonicalResult where
 deriving Inhabited
 
 /-- Generate terms of a given type, with given timeout and desired count. -/
-@[never_extract, extern "canonical"] opaque canonical : @& Typ → String → UInt64 → USize → IO CanonicalResult
+@[never_extract, extern "canonical"] opaque canonical : @& Decl → UInt64 → USize → IO CanonicalResult
 
 /-- Terminate all invocations of `canonical` that are currently running. -/
 @[never_extract, extern "cancel"] opaque cancel : IO Unit
 
 /-- Start a server with the refinement UI on the given type. -/
-@[never_extract, extern "refine"] opaque refine : @& Typ → IO Unit
+@[never_extract, extern "refine"] opaque refine : @& Decl → IO Unit
 
 /-- Get the premises for inclusion, and structures to be unfolded, from the user-supplied list and the premise selector. -/
 def getPremises (goal : MVarId) (consts : Array Name) (config : Config) : MetaM (Array Name × Array Name) := do
@@ -55,15 +55,15 @@ def getPremises (goal : MVarId) (consts : Array Name) (config : Config) : MetaM 
 
   return (premises, structs)
 
-def preprocess (goal : MVarId) (config : Config) (structs : Array Name) : MetaM (MVarId × (Expr → MetaM Expr)) := do
+def preprocess (goal : MVarId) (config : Config) (structs : Array Name) : MetaM (MVarId × (Lean.Expr → MetaM Lean.Expr)) := do
   if config.destruct then
     return ← Destruct.destructCanonical goal structs
   return (goal, pure)
 
 /-- Run Canonical asynchronously, so that we can check for cancellation. -/
-def runCanonical (typ : Typ) (name : String) (timeout : UInt64) (config : Config) : MetaM CanonicalResult := do
+def runCanonical (decl : Decl) (timeout : UInt64) (config : Config) : MetaM CanonicalResult := do
   checkInterrupted
-  let task ← IO.asTask (prio := .dedicated) (canonical typ name timeout config.count.toUSize)
+  let task ← IO.asTask (prio := .dedicated) (canonical decl timeout config.count.toUSize)
   while !(← IO.hasFinished task) do
     if ← interrupted then
       cancel
@@ -72,14 +72,14 @@ def runCanonical (typ : Typ) (name : String) (timeout : UInt64) (config : Config
   IO.ofExcept task.get
 
 /-- Perform `fromCanonical` and `reconstruct` on the terms in `result`. -/
-def postprocess (result : CanonicalResult) (goal : MVarId) (config : Config) (reconstruct : Expr → MetaM Expr) : MetaM (Array Expr) := do
+def postprocess (result : CanonicalResult) (goal : MVarId) (config : Config) (reconstruct : Lean.Expr → MetaM Lean.Expr) : MetaM (Array Lean.Expr) := do
   withArityUnfold config.monomorphize do goal.withContext do
     let proofs ← result.terms.mapM fun term => do fromCanonical term (← goal.getType)
     let proofs ← proofs.mapM reconstruct
     return proofs
 
 /-- If no proof was found, show a relevant error. Otherwise, suggest the proofs. -/
-def present (proofs : Array Expr) (goal : MVarId)
+def present (proofs : Array Lean.Expr) (goal : MVarId)
   (premises_syntax : Option (TSyntax `Canonical.premises)) (timeout_syntax : Option (TSyntax `num)) : TacticM Unit := do
   if proofs.isEmpty then
     match premises_syntax with

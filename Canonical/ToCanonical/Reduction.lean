@@ -5,7 +5,7 @@ public import Lean.Meta.Basic
 public import Lean.ProjFns
 import Canonical.Util
 
-open Lean hiding Term
+open Lean
 open Meta Std
 
 namespace Canonical
@@ -13,12 +13,12 @@ namespace Canonical
 public section
 
 /-- Placeholder for a term, not a reserved symbol. -/
-def wildcard : Term := { spine := { head := "*" } }
+def wildcard : Canonical.Expr := { spine := { head := "*" } }
 
-/-- Creates an η-**short** Term applying `v` at the head. -/
-def varToTerm (v : Var) : Term := { spine := { head := v.name } }
+/-- Creates an η-**short** `Expr` applying `d` at the head. -/
+def Decl.toExpr (d : Decl) : Canonical.Expr := { spine := { head := d.name } }
 
-partial def containsLambda (t : Term) : Bool :=
+partial def containsLambda (t : Canonical.Expr) : Bool :=
   !t.params.isEmpty || t.spine.args.any containsLambda
 
 /-- Counts the occurrences of `v` as a head symbol in `t`. -/
@@ -26,7 +26,7 @@ partial def count (t : Spine) (v : String) : Nat :=
   t.args.foldl (init := if t.head == v then 1 else 0) (· + count ·.spine v)
 
 /-- Filtering for candidate simp lemmas based on the `lhs`. -/
-def validSimpLemma (xs : Array Expr) (lhs : Spine) : MetaM Bool := do
+def validSimpLemma (xs : Array Lean.Expr) (lhs : Spine) : MetaM Bool := do
   if ← xs.anyM (fun x => do pure ((← typeArity1 (← x.fvarId!.getType)) != 0)) then
     pure false -- higher order
   else if ← xs.anyM (fun x => do pure (count lhs (← toNameString x) != 1)) then
@@ -37,24 +37,24 @@ def validSimpLemma (xs : Array Expr) (lhs : Spine) : MetaM Bool := do
 
 /-- Rule corresponding to reduction of projections. -/
 def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (constructor : String) (constructorVal : ConstructorVal) (arity : Nat) : Rule :=
-  let ctorArgs : Array Term := (Array.replicate (constructorVal.numParams + constructorVal.numFields) wildcard).set! (constructorVal.numParams + projInfo.i) { spine := { head := "field" } }
-  let fieldArgs : Array Term := Array.ofFn (fun (i : Fin (arity - projInfo.numParams - 1)) => { spine := { head := "arg" ++ toString i.val } })
-  let args : Array Term := ((Array.replicate projInfo.numParams wildcard).push { spine := { head := constructor, args := ctorArgs } }) ++ fieldArgs
+  let ctorArgs : Array Canonical.Expr := (Array.replicate (constructorVal.numParams + constructorVal.numFields) wildcard).set! (constructorVal.numParams + projInfo.i) { spine := { head := "field" } }
+  let fieldArgs : Array Canonical.Expr := Array.ofFn (fun (i : Fin (arity - projInfo.numParams - 1)) => { spine := { head := "arg" ++ toString i.val } })
+  let args : Array Canonical.Expr := ((Array.replicate projInfo.numParams wildcard).push { spine := { head := constructor, args := ctorArgs } }) ++ fieldArgs
   ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, #[], true⟩
 
 /-- Rule corresponding to ι-reduction -/
-def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (constructorVal : ConstructorVal) (rhs : Term) : Rule :=
+def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (constructorVal : ConstructorVal) (rhs : Canonical.Expr) : Rule :=
   let ctorStart := (recVal.numParams+recVal.numMotives+recVal.numMinors);
-  let args : Array Term := (rhs.params.shrink ctorStart).map varToTerm
-  let ctorArgs : Array Term := (rhs.params.toSubarray ctorStart (ctorStart + constructorVal.numFields)).toArray.map varToTerm
+  let args : Array Canonical.Expr := (rhs.params.shrink ctorStart).map Decl.toExpr
+  let ctorArgs : Array Canonical.Expr := (rhs.params.toSubarray ctorStart (ctorStart + constructorVal.numFields)).toArray.map Decl.toExpr
   let major : Spine := { head := constructor.toString, args := Array.replicate constructorVal.numParams wildcard ++ ctorArgs}
-  let args : Array Term := (args ++ Array.replicate recVal.numIndices wildcard).push { spine := major}
-  let args := args ++ (rhs.params.toSubarray (ctorStart + constructorVal.numFields)).toArray.map varToTerm
+  let args : Array Canonical.Expr := (args ++ Array.replicate recVal.numIndices wildcard).push { spine := major }
+  let args := args ++ (rhs.params.toSubarray (ctorStart + constructorVal.numFields)).toArray.map Decl.toExpr
   ⟨{head := recursor.toString, args := args }, rhs.spine, #[], true⟩
 
 /-- Rule corresponding to δ-reduction. -/
-def defRule (name : String) (defn : Term) : Rule :=
-  ⟨{ head := name, args := defn.params.map varToTerm }, defn.spine, #[], false⟩
+def defRule (name : String) (defn : Canonical.Expr) : Rule :=
+  ⟨{ head := name, args := defn.params.map Decl.toExpr }, defn.spine, #[], false⟩
 
 /-- Rules for the equality of distinct constructors to reduce to `False`. -/
 def reduceCtorEqRules (ind : Name) (info : InductiveVal) : MetaM (Array Rule) := do

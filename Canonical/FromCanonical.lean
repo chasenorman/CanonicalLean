@@ -10,14 +10,13 @@ namespace Canonical
 
 public section
 
-open Lean hiding Term
-open Std Meta Syntax
+open Lean Std Meta Syntax
 
-/-- When translating from Canonical, we associate names in the `Term` with corresponding Lean `FVarId`s -/
+/-- When translating from Canonical, we associate names in the `Expr` with corresponding Lean `FVarId`s -/
 abbrev FromCanonicalM := StateT (HashMap String FVarId) MetaM
 
 /-- Converts instances of `Pi.mk` and `Pi.f` at the head into λ-expressions and applications, respectively. -/
-partial def removePi (t : Term) : Term :=
+partial def removePi (t : Canonical.Expr) : Canonical.Expr :=
   if t.spine.head == (``Pi.mk).toString then
     let body := t.spine.args[2]!
     removePi { params := t.params ++ body.params, lets := t.lets ++ body.lets, spine := body.spine }
@@ -43,7 +42,7 @@ def toSyntax (premiseRules: Array String) (goalRules: Array String) : Syntax := 
   pure result
 
 /- Inverse of `toHead` in `Util.lean`. -/
-def fromHead (s : String) : FromCanonicalM (Expr × Expr) := do
+def fromHead (s : String) : FromCanonicalM (Lean.Expr × Lean.Expr) := do
   if s == (`Sort).toString then
     let l ← mkFreshLevelMVar
     return (.sort l, .sort l.succ)
@@ -63,7 +62,7 @@ def fromHead (s : String) : FromCanonicalM (Expr × Expr) := do
 
 mutual
   /-- Builds a λ-expression of type `type` following the parameters of `t`. -/
-  partial def fromTerm (t : Term) (type : Expr) : FromCanonicalM Expr := do
+  partial def fromTerm (t : Canonical.Expr) (type : Lean.Expr) : FromCanonicalM Lean.Expr := do
     let t := removePi t
     forallBoundedTelescope type t.params.size fun xs body => do
       assert! xs.size == t.params.size
@@ -84,7 +83,7 @@ mutual
       else return ← mkLambdaFVars xs spine
 
   /-- Builds an application expression from `s`. -/
-  partial def fromSpine (s : Spine) : FromCanonicalM Expr := do
+  partial def fromSpine (s : Spine) : FromCanonicalM Lean.Expr := do
     if s.head == (``Pi).toString then
       let binderType ← fromTerm s.args[0]! (.sort (← mkFreshLevelMVar))
       let lam ← fromTerm s.args[1]! (.forallE `a binderType (.sort (← mkFreshLevelMVar)) .default)
@@ -95,7 +94,7 @@ mutual
     return ← whnf (mkAppN fn (← fromApp s.args.toList fnType).toArray)
 
   /-- Recursively translates the arguments of a head symbol with type `type`.  -/
-  partial def fromApp (args : List Term) (type : Expr) : FromCanonicalM (List Expr) := do
+  partial def fromApp (args : List Canonical.Expr) (type : Lean.Expr) : FromCanonicalM (List Lean.Expr) := do
     match args with
     | [] => return []
     | head :: tail =>
@@ -105,7 +104,7 @@ mutual
       return arg :: (← fromApp tail (body.instantiate1 arg))
 end
 
-/-- Converts a Term `t` of type `type` to a Lean expression. -/
-def fromCanonical (t : Term) (type : Expr) : MetaM Expr := do
+/-- Converts a term `t` of type `type` to a Lean expression. -/
+def fromCanonical (t : Canonical.Expr) (type : Lean.Expr) : MetaM Lean.Expr := do
   return ← (fromTerm t type).run' (← (← getLCtx).foldlM (fun acc decl =>
     do pure (acc.insert (← toHead decl.toExpr).1.toString decl.fvarId)) {})

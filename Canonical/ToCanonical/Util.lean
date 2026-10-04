@@ -8,21 +8,19 @@ public import Canonical.Monomorphize.Basic
 import Canonical.Destruct.Basic
 import Canonical.Symbols
 
-open Lean hiding Term
-open Meta Expr Std Monomorphize
+open Lean Meta Expr Std Monomorphize
 
 namespace Canonical
 
 public section
 
-/-- Definition of a symbol during translation,
-    to be converted into `(Let × Option Typ)` -/
+/-- Definition of a symbol during translation, to be converted into a `Decl`. -/
 structure Definition where
   /-- `.undef` corresponds to a definition without translated type,
       but may acquire one as the translation progresses. -/
-  type: LOption Typ
+  type: LOption Canonical.Expr
   arity: Arity
-  rules: Array Rule := #[]
+  equations: Array Rule := #[]
   neighbors: HashSet String := {}
 deriving Inhabited
 
@@ -54,11 +52,14 @@ structure State where
 
 abbrev ToCanonicalM := ReaderT Context $ StateRefT State MonoM
 
-def toVar (e : Expr) : MetaM Var := do pure { name := ← toNameString e }
+def modifyDefinition (key : String) (f : Definition → Definition) : ToCanonicalM Unit :=
+  modify fun state => { state with definitions := state.definitions.insert key (f (state.definitions.find? key).get!) }
 
-def setType (key : String) (typ : LOption Typ) : ToCanonicalM Unit := do
-  modify fun state => { state with definitions := state.definitions.insert key {
-    (state.definitions.find? key).get! with type := typ } }
+def setType (key : String) (type : LOption Canonical.Expr) : ToCanonicalM Unit :=
+  modifyDefinition key ({ · with type })
+
+def addEquations (key : String) (equations : Array Rule) : ToCanonicalM Unit :=
+  modifyDefinition key fun defn => { defn with equations := defn.equations ++ equations }
 
 def MAX_TYPES := 100
 
@@ -100,7 +101,7 @@ def addConstraints (rules : Array Rule) : ToCanonicalM Bool := do
   return false
 
 /-- Convert `proj`, `lit`, and `forallE` into applications of a head symbol. -/
-def elimSpecial (e : Expr) : MetaM Expr := do
+def elimSpecial (e : Lean.Expr) : MetaM Lean.Expr := do
   withApp e fun fn args =>
     match fn with
     | forallE name type body info => do
@@ -120,13 +121,15 @@ def elimSpecial (e : Expr) : MetaM Expr := do
     | _ => return e
 
 /-- Defines the `<synthInstance>` symbol with type `<instImplicit>`. -/
-def defineInstance (inhabited : Bool := true) : ToCanonicalM Typ := do
-  let typ : Typ := { spine := { head := "<instImplicit>" } }
-  modify (fun s => { s with definitions := (
-    (s.definitions.insert "<instImplicit>" { arity := {}, type := .none }).insert "<synthInstance>" { arity := {}, type := .some typ } ).insert "<instUninhabited>" { arity := {}, type := .none } })
-  return if inhabited then typ else { spine := { head := "<instUninhabited>" } }
+def defineInstance (inhabited : Bool := true) : ToCanonicalM Canonical.Expr := do
+  let type : Canonical.Expr := { spine := { head := "<instImplicit>" } }
+  modify fun s => { s with definitions := s.definitions |>
+      (·.insert "<instImplicit>" { arity := {}, type := .none }) |>
+      (·.insert "<synthInstance>" { arity := {}, type := .some type }) |>
+      (·.insert "<instUninhabited>" { arity := {}, type := .none }) }
+  return if inhabited then type else { spine := { head := "<instUninhabited>" } }
 
-def monomorphizePremise (name : Name) : ToCanonicalM (Bool × Array (Expr × Expr × Name)) := do
+def monomorphizePremise (name : Name) : ToCanonicalM (Bool × Array (Lean.Expr × Lean.Expr × Name)) := do
   let info ← getConstInfo name
   if (← read).config.monomorphize then
     if (← getAllBinderInfos info.type).contains .instImplicit then
@@ -142,15 +145,15 @@ def monomorphizePremise (name : Name) : ToCanonicalM (Bool × Array (Expr × Exp
       return (true, result)
   return (false, #[(← mkConstWithFreshMVarLevels name, info.type, name)])
 
-def destructPremise (const : Name) (premise : Expr × Expr × Name) (simp : Bool) : ToCanonicalM (Bool × Array (Expr × Expr × Name)) := do
+def destructPremise (const : Name) (expr type : Lean.Expr) (name : Name) (simp : Bool) : ToCanonicalM (Bool × Array (Lean.Expr × Lean.Expr × Name)) := do
   if !simp && (← read).config.destruct then
     let structures := (← read).structures
     let structures := if let .some struct := ← Destruct.getStruct const then structures.erase struct else structures
-    let bij ← (Destruct.destructMain premise.2.1 premise.2.2).run (← Destruct.Context.populate structures)
+    let bij ← (Destruct.destructMain type name).run (← Destruct.Context.populate structures)
     let (metas, _, _) ← lambdaMetaTelescope' bij.pack bij.unpack.size .syntheticOpaque
     let mut result := #[]
     for (destruct, m) in bij.unpack.zip metas do
-      let expr := destruct.bindingBody!.instantiate1 premise.1
+      let expr := destruct.bindingBody!.instantiate1 expr
       -- m.mvarId!.assign expr
       modifyThe MonoState fun s => { s with
         mono := s.mono.insert (.sort .zero) (⟨m.mvarId!, ⟨expr, []⟩⟩ :: ((s.mono.get? (.sort .zero)).getD []))
@@ -158,4 +161,4 @@ def destructPremise (const : Name) (premise : Expr × Expr × Name) (simp : Bool
       let (mvarName, mvarType) ← toHead m
       result := result.push (expr, mvarType, mvarName)
     return (true, result)
-  return (false, #[premise])
+  return (false, #[(expr, type, name)])

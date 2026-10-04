@@ -155,7 +155,7 @@ def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (E
   let env ← getEnv
   let consts ← (← goal.getRelevantConstants).toArray.filterMapM getStruct
   let consts ← consts.filterM fun name => do pure !isClass env name
-  let goal := (← mkFreshExprMVar (← goal.getType)).mvarId!
+  let goal ← goal.withContext do pure (← mkFreshExprMVar (← goal.getType)).mvarId!
   goal.withContext do
     let typ ← goal.getType
     let dneg := (env.find? ``Canonical.dneg).get!.value!

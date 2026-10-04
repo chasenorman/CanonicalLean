@@ -30,18 +30,19 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
   let (processedGoal, reconstruct) ← withArityUnfold config.monomorphize do
     preprocess goal config structs
 
-  let typ ← withArityUnfold config.monomorphize do processedGoal.withContext do
-    toCanonical (← processedGoal.getType) premises (structs.push ``Pi) config
+  let name := ((← Lean.Elab.Term.getDeclName?).map toString).getD "proof"
+  let decl ← withArityUnfold config.monomorphize do processedGoal.withContext do
+    toCanonical name (← processedGoal.getType) premises (structs.push ``Pi) config
 
   if config.debug then
     Elab.admitGoal goal
-    save_typ typ "debug.json"
-    dbg_trace typ
+    save_problem decl "debug.json"
+    dbg_trace decl.type
     return
 
   -- Refinement UI
   if config.refine then
-    let _ ← refine typ
+    let _ ← refine decl
     let (width, indent, column, range) ← widthIndentColumnRange
     let x : WithRpcRef RpcData ← WithRpcRef.mk {
       mctx := ← getMCtx, mainGoal := goal,
@@ -54,7 +55,6 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
     return
 
   let timeout := if let some timeout := timeout_syntax then UInt64.ofNat timeout.getNat else 5
-  let name := ((← Lean.Elab.Term.getDeclName?).map toString).getD "proof"
-  let result ← runCanonical typ name timeout config
+  let result ← runCanonical decl timeout config
   let proofs ← postprocess result processedGoal config reconstruct
   present proofs goal premises_syntax timeout_syntax
