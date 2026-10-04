@@ -25,10 +25,10 @@ def registerSimpPremise (attribution : String) (type : Lean.Expr) : ToCanonicalM
 /-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate. -/
 def definePremise (const : Name) (simpOnly : Bool := false) : ToCanonicalM Unit := do
   let (modified1, monomorphized) ← monomorphizePremise const
-  for premise in monomorphized do
-    let (modified2, destructed) ← destructPremise const premise simpOnly
-    for (_expr, type, name) in destructed do
-      if !(← registerSimpPremise const.toString type) && !simpOnly then
+  for (expr, type, name) in monomorphized do
+    if !(← registerSimpPremise const.toString type) && !simpOnly then
+      let (modified2, destructed) ← destructPremise const expr type name simpOnly
+      for (_expr, type, name) in destructed do
         if !modified1 && !modified2 then let _ ← defineConst const
         else let _ ← define name.toString type
 
