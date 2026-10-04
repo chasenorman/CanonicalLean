@@ -118,10 +118,19 @@ def onlyHasGlobalFVars (e : Expr) : MonoM Bool := do
   let p := fun x => !globalFVars.contains x
   return !e.hasAnyFVar p
 
+/-- `abstractMVars`, after instantiating the types of the metavariables of `e`. Otherwise an
+already assigned universe metavariable that occurs only in the type of an abstracted
+metavariable is turned into a universe parameter. -/
+def abstractMVarsInst (e : Expr) : MetaM AbstractMVarsResult := do
+  let e ← instantiateMVars e
+  for m in (e.collectMVars {}).result do
+    m.setType (← instantiateMVars (← m.getType))
+  abstractMVars e
+
 /-- Add a typeclass instance to `candidateInsts`. -/
 partial def addAsCandidate (inst : Expr) : MonoM Unit := do
   if ← onlyHasGlobalFVars inst then
-    let ⟨levels, _, type⟩ ← abstractMVars (← inferType inst)
+    let ⟨levels, _, type⟩ ← abstractMVarsInst (← inferType inst)
     modify fun inst => { inst with candidateInsts := inst.candidateInsts.insert ⟨type, levels.toList⟩ }
 
 /-- Unfolds constants that are not global instances at the head of `e`.  -/
@@ -135,7 +144,8 @@ partial def unfoldInstDefn (e : Expr) : MetaM Expr := do
   return e
 
 /-- Apply `transform` to the type and local context of `goal`. -/
-def transformMVar [Monad n] [MonadLiftT MetaM n] [MonadMCtx n] (goal : MVarId) (transform : Expr → n Expr) : n (Expr × LocalContext) := do
+def transformMVar [Monad n] [MonadLiftT MetaM n] [MonadMCtx n] (goal : MVarId) (transform : Expr → n Expr)
+    (skipValue : FVarId → Bool := fun _ => false) : n (Expr × LocalContext) := do
   let decl := ((← getMCtx).findDecl? goal).get!
   let type ← transform decl.type
 
@@ -143,7 +153,9 @@ def transformMVar [Monad n] [MonadLiftT MetaM n] [MonadMCtx n] (goal : MVarId) (
     let decl := decl.setType (← transform decl.type)
 
     if let some value := decl.value? then
-      pure (decl.setValue (← transform value))
+      -- The value of a symbol is its own assignment; rewriting it would make it self-referential.
+      if skipValue decl.fvarId then pure decl
+      else pure (decl.setValue (← transform value))
     else pure decl
   }
 
@@ -154,11 +166,14 @@ def transformMVar [Monad n] [MonadLiftT MetaM n] [MonadMCtx n] (goal : MVarId) (
 partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
   withApp e fun fn args => do
     let some (_, type, levels) ← getHeadInfo fn | return none
-    -- Assign new metavariable levels so outputs are independent of levels.
-    let mvarlevels ← mkFreshLevelMVars levels.length
-    let fn := fn.instantiateLevelParams levels mvarlevels
+    -- The pattern is built at the universe levels of `e`. A symbol is a local definition, so
+    -- it cannot be universe-polymorphic: each universe instantiation gets its own symbol,
+    -- and candidate instances (hence premise copies) keep the universes of the goal.
+    let us := match fn with
+      | .const _ us => us
+      | _ => []
     let (metas, binders, _) ← forallMetaTelescopeReducing
-      (type.instantiateLevelParams levels mvarlevels) args.size
+      (type.instantiateLevelParams levels us) args.size
     -- Check that `e` is eta expanded.
     if metas.size != args.size then return none
     for i in [0:binders.size] do
@@ -194,7 +209,7 @@ partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
           if ← onlyHasGlobalFVars monoPattern then
             -- Abstract monoPattern before isDefEq, so as to not assign the mvars.
             let monoPattern ← instantiateMVars monoPattern
-            let ⟨paramNames, mvars, abstracted⟩ ← abstractMVars monoPattern
+            let ⟨paramNames, mvars, abstracted⟩ ← abstractMVarsInst monoPattern
             let specName := Name.mkSimple (((← toName fn).num cachedSpec.length).toStringWithSep "_" true)
             let specMvarId := (← mkFreshExprMVar (← inferType
               (abstracted.instantiateLevelParams paramNames.toList (← mkFreshLevelMVars paramNames.size))) .syntheticOpaque specName).mvarId!
@@ -295,7 +310,7 @@ def monomorphizeConst (name : Name) : MonoM (List Expr) := do
 
     let appliedExpr := mkAppN (Expr.const name levels) mvars
     let instantiated ← instantiateMVars appliedExpr
-    let abstrResult ← abstractMVars instantiated
+    let abstrResult ← abstractMVarsInst instantiated
     let binfos := abstrResult.mvars.map fun mvar =>
       (mvars.idxOf? mvar).map fun idx => binders[idx]!
 
@@ -316,8 +331,19 @@ def monomorphizeConst (name : Name) : MonoM (List Expr) := do
 
 structure MonoConfig where
   canonicalize : Bool := true
+  /-- Introduce the monomorphic symbols as `let`-bound local definitions rather than opaque
+  hypotheses. The transformed goal is then definitionally equal to the original one, which
+  is what makes proofs of it kernel-checkable. -/
+  defs : Bool := true
 
 declare_config_elab monoConfig MonoConfig
+
+/-- Add `name := val` to the context of `goal`, as a `let` if `defs` and as a hypothesis otherwise. -/
+def noteSymbol (goal : MVarId) (name : Name) (val : Expr) (defs : Bool) : MetaM (FVarId × MVarId) := do
+  if defs then
+    let g ← goal.define name (← inferType val) val
+    g.intro1P
+  else goal.note name val
 
 def monomorphizeTactic (goal : MVarId) (ids : Array Syntax) (config : MonoConfig) : MonoM MVarId := do
   -- Consider instImplicit local decls.
@@ -346,21 +372,25 @@ def monomorphizeTactic (goal : MVarId) (ids : Array Syntax) (config : MonoConfig
 
   -- Canonicalize by noting the `monos`.
   if config.canonicalize then
-    let goal ← (← get).mono.toList.foldlM (fun goal pair => do
-      let (_, monos) := pair
-      monos.foldlM (fun goal mono => do
+    let mut symFVars : HashSet FVarId := {}
+    let mut goal := goal
+    for (_, monos) in (← get).mono.toList do
+      for mono in monos do
         -- Assign the metavariable to a new local decl which is assigned to the monomorphization.
         let name := ((← getMCtx).getDecl mono.id).userName
-        let noteResult ← MVarId.note goal name (mono.assignment.expr.instantiateLevelParams mono.assignment.levels (mono.assignment.levels.map (fun _ => Level.zero)))
+        let noteResult ← noteSymbol goal name (mono.assignment.expr.instantiateLevelParams mono.assignment.levels (mono.assignment.levels.map (fun _ => Level.zero))) config.defs
         mono.id.assign (.fvar noteResult.1)
-        pure noteResult.2
-      ) goal
-    ) goal
+        symFVars := symFVars.insert noteResult.1
+        goal := noteResult.2
 
-    -- The second pass substitutes the `monos`.
-    let (type, lctx) ← transformMVar goal fun e => Meta.transform e (pre := monoTransformStep)
+    -- The second pass substitutes the `monos`. It runs in the context of `goal`, which is
+    -- where the symbols and copies exist.
+    let (type, lctx) ← goal.withContext <| transformMVar goal
+      (fun e => Meta.transform e (pre := monoTransformStep)) (skipValue := symFVars.contains)
     -- Failsafe for new `monos` being added during the second pass.
     let _ ← finalizeMonos
     let _ ← goal.modifyLCtx fun _ => lctx
+    -- The types of existing free variables changed: cached inferred types are stale.
+    resetCache
     goal.replaceTargetDefEq type
   else return goal
