@@ -30,3 +30,22 @@ lean_lib Canonical where
 
 @[test_driver]
 lean_lib Test
+
+/--
+`libcanonical_lean` is linked against `libleanshared`, so executables must use that same Lean runtime
+rather than Lake's default static one (two runtimes in one process segfault). Listing it before Lake's
+static `-lInit -lLean -lleanrt ...` makes the linker resolve every Lean symbol from the shared library.
+-/
+def sharedLeanLinkArgs : Array String := #["-lleanshared"]
+
+lean_exe robustness where
+  root := `Canonical.Test.Robustness
+  supportInterpreter := true
+  moreLinkLibs := #[canonical]
+  moreLinkArgs := sharedLeanLinkArgs
+
+lean_exe debug where
+  root := `Canonical.Test.Debug
+  supportInterpreter := true
+  moreLinkLibs := #[canonical]
+  moreLinkArgs := sharedLeanLinkArgs

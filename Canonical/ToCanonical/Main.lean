@@ -3,6 +3,7 @@ module
 public import Canonical.ToCanonical.Util
 import Canonical.ToCanonical.Translate
 import Canonical.ToCanonical.Reduction
+import Canonical.Destruct.Basic
 import Lean
 
 open Lean
@@ -75,6 +76,7 @@ def toCanonical (name : String) (goal : Lean.Expr) (premises : Array Name) (stru
     {
       arities := ← lctx.foldlM (fun arities decl => do
         pure (arities.insert decl.fvarId (← typeArity decl.type)))
-          (.emptyWithCapacity lctx.size), config, structures
+          (.emptyWithCapacity lctx.size), config
+      structures := Destruct.STRUCTURES ++ structures
     }).run' { }).run'
       { globalFVars := .ofArray lctx.getFVarIds, constNames := .ofList [``OfNat.ofNat] }
