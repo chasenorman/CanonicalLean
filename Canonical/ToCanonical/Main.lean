@@ -68,7 +68,7 @@ def substDestructed (destructed : Array (Lean.Expr × Lean.Expr × Array Lean.Ex
 def witnessToCanonical (goal witness : Lean.Expr) (destructed : Array (Lean.Expr × Lean.Expr × Array Lean.Expr)) :
     ToCanonicalM Canonical.Expr := do
   let witness ← Core.betaReduce (← substDestructed destructed witness)
-  let witness ← Destruct.cancel (← Destruct.Context.populate (← read).structures).translations witness
+  let witness ← Destruct.cancel (← read).destruct.translations witness
   let witness ← Destruct.reduceProjs witness
   let witness ← Meta.transform witness (post := fun e => return .done (← whnf e))
   toTerm witness goal (← typeArity goal).params.toList
@@ -112,6 +112,6 @@ def toCanonical (name : String) (goal : Lean.Expr) (premises : Array Name) (stru
       arities := ← lctx.foldlM (fun arities decl => do
         pure (arities.insert decl.fvarId (← typeArity decl.type)))
           (.emptyWithCapacity lctx.size), config
-      structures := Destruct.STRUCTURES ++ structures
+      destruct := ← Destruct.Context.populate structures
     }).run' { }).run'
       { globalFVars := .ofArray lctx.getFVarIds, constNames := .ofList [``OfNat.ofNat] }

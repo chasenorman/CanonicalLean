@@ -5,7 +5,7 @@ public import Lean.Data.AssocList
 public import Canonical.Basic
 public import Canonical.Util
 public import Canonical.Monomorphize.Basic
-import Canonical.Destruct.Basic
+public import Canonical.Destruct.Basic
 import Canonical.Symbols
 
 open Lean Meta Expr Std Monomorphize
@@ -41,7 +41,8 @@ structure Context where
   noTypes: Bool := false
   config: Config
   polarity: Polarity := .goal
-  structures: Array Name
+  /-- The structures and translations that `destruct` uses. -/
+  destruct: Destruct.Context
   ruleDepth : Nat := 0
 
 /-- The `definitions` to be sent to Canonical,
@@ -150,9 +151,10 @@ def monomorphizePremise (name : Name) : ToCanonicalM (Bool × Array (Lean.Expr �
 def destructPremise (const : Name) (expr type : Lean.Expr) (name : Name) (simp : Bool) :
     ToCanonicalM (Option (Lean.Expr × Array Lean.Expr) × Array (Lean.Expr × Lean.Expr × Name)) := do
   if !simp && (← read).config.destruct then
-    let structures := (← read).structures
-    let structures := if let .some struct := ← Destruct.getStruct const then structures.erase struct else structures
-    let bij ← (Destruct.destructMain type name).run (← Destruct.Context.populate structures)
+    let destruct := (← read).destruct
+    let destruct := if let .some struct := ← Destruct.getStruct const
+      then { destruct with structures := destruct.structures.erase struct } else destruct
+    let bij ← (Destruct.destructMain type name).run destruct
     let (metas, _, _) ← lambdaMetaTelescope' bij.pack bij.unpack.size .syntheticOpaque
     let mut result := #[]
     for (destruct, m) in bij.unpack.zip metas do

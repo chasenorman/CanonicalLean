@@ -167,7 +167,7 @@ mutual
   partial def onTypeConst (name : Name) : ToCanonicalM Unit := withIncRecDepth do
     if let .inductInfo info ← getConstInfo name then
       let env ← getEnv
-      if !(← read).config.destruct || !isStructure env name || (← read).structures.contains name then
+      if !(← read).config.destruct || !isStructure env name || (← read).destruct.structures.contains name then
         for ctor in info.ctors do
           let _ ← defineConst ctor
 

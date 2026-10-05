@@ -185,7 +185,7 @@ partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
           let mvarlevels ← mkFreshLevelMVars specLevels.length
           let instantiated := specBody.instantiateLevelParams specLevels mvarlevels
           let ⟨metas, _, body⟩ ← lambdaMetaTelescope instantiated
-          if ← isDefEqGuarded e body then
+          if ← withoutProofIrrelevance do isDefEqGuarded e body then
             let newExpr ← pure (mkAppN (.mvar specmVar) (← metas.mapM instantiateMVars))
             return .continue newExpr
 
