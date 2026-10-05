@@ -68,7 +68,17 @@ def findFailures (const : Name) : MetaM Accumulate := do
   let value := (← getConstInfo const).value! (allowOpaque := true)
   traverse const value test .root
 
-/-- Theorems defined in modules whose name has one of `roots` as a prefix. -/
+/-- Fisher–Yates shuffle, with a generator seeded by `seed`. -/
+def shuffle (xs : Array α) (seed : Nat := 0) : Array α := Id.run do
+  let mut xs := xs
+  let mut gen := mkStdGen seed
+  for i in [1:xs.size] do
+    let (j, gen') := randNat gen 0 i
+    gen := gen'
+    xs := xs.swapIfInBounds i j
+  return xs
+
+/-- Theorems defined in modules whose name has one of `roots` as a prefix, in a fixed random order. -/
 def sweepTargets (roots : Array Name) : MetaM (Array Name) := do
   let env ← getEnv
   let names := env.constants.fold (init := #[]) fun acc name info =>
@@ -78,7 +88,8 @@ def sweepTargets (roots : Array Name) : MetaM (Array Name) := do
       let mod := env.header.moduleNames[idx.toNat]!
       if roots.any (·.isPrefixOf mod) then acc.push name else acc
     | none => acc
-  return names.qsort (·.cmp · == .lt)
+  -- Sort first, since the order of `env.constants` is not deterministic.
+  return shuffle (names.qsort (·.cmp · == .lt))
 
 /-- `lake exe robustness [module prefix...]` (default: `Init Std`). -/
 unsafe def main (args : List String) : IO UInt32 := do
