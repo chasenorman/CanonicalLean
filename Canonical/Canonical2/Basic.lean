@@ -51,9 +51,9 @@ def automateCanonical (original : MVarId) (suggestions : Array Name) (timeout : 
   let config := {}
   let goal ← original.clone
   let (premises, structs) ← Canonical.getPremises goal #[] config
-  let (goal', reconstruct) ← Canonical.preprocess goal config structs
+  let (goal', reconstruct, _) ← Canonical.preprocess goal config structs
   let name := ((← getMCtx).findDecl? goal).get!.userName.toString
-  let decl ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
+  let (decl, _) ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
     Canonical.toCanonical name (← goal'.getType) (suggestions ++ premises) (structs.push ``Canonical.Pi) config
   if (← IO.checkCanceled) then throwError "canceled"
   let result ← Canonical.canonical decl timeout config.count.toUSize

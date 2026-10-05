@@ -7,7 +7,7 @@ def run (const : Name) (pos : Pos) (premises : NameSet) : MetaM Unit := do
   let value := (← getConstInfo const).value! (allowOpaque := true)
   viewSubexpr (fun _ e => do
     IO.println s!"Goal: {← ppExpr (← inferType e)}"
-    let proofs ← canonicalSimple (← inferType e) premises (verbose := true)
+    let proofs ← canonicalSimple (← inferType e) premises (verbose := true) (witness := some e)
     if h : proofs.size > 0 then
       IO.println s!"Proof: {← ppExpr proofs[0]}"
     else

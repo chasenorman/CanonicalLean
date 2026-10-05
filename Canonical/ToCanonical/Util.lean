@@ -145,7 +145,10 @@ def monomorphizePremise (name : Name) : ToCanonicalM (Bool × Array (Lean.Expr �
       return (true, result)
   return (false, #[(← mkConstWithFreshMVarLevels name, info.type, name)])
 
-def destructPremise (const : Name) (expr type : Lean.Expr) (name : Name) (simp : Bool) : ToCanonicalM (Bool × Array (Lean.Expr × Lean.Expr × Name)) := do
+/-- If the premise `expr` is destructed, returns its `pack` and the metavariables standing for its
+    components, along with the components. -/
+def destructPremise (const : Name) (expr type : Lean.Expr) (name : Name) (simp : Bool) :
+    ToCanonicalM (Option (Lean.Expr × Array Lean.Expr) × Array (Lean.Expr × Lean.Expr × Name)) := do
   if !simp && (← read).config.destruct then
     let structures := (← read).structures
     let structures := if let .some struct := ← Destruct.getStruct const then structures.erase struct else structures
@@ -160,5 +163,5 @@ def destructPremise (const : Name) (expr type : Lean.Expr) (name : Name) (simp :
       }
       let (mvarName, mvarType) ← toHead m
       result := result.push (expr, mvarType, mvarName)
-    return (true, result)
-  return (false, #[(expr, type, name)])
+    return (some (bij.pack, metas), result)
+  return (none, #[(expr, type, name)])

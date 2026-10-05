@@ -27,17 +27,17 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
     else pure #[]
   let (premises, structs) ← getPremises goal consts config
 
-  let (processedGoal, reconstruct) ← withArityUnfold config.monomorphize do
+  let (processedGoal, reconstruct, _) ← withArityUnfold config.monomorphize do
     preprocess goal config structs
 
   let name := ((← Lean.Elab.Term.getDeclName?).map toString).getD "proof"
-  let decl ← withArityUnfold config.monomorphize do processedGoal.withContext do
+  let (decl, _) ← withArityUnfold config.monomorphize do processedGoal.withContext do
     toCanonical name (← processedGoal.getType) premises (structs.push ``Pi) config
 
   if config.debug then
     Elab.admitGoal goal
     save_problem decl "debug.json"
-    dbg_trace decl.type
+    dbg_trace decl.type.get!
     return
 
   -- Refinement UI

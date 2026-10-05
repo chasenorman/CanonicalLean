@@ -16,13 +16,13 @@ syntax (name := destruct) "destruct " ("[" ident,* "]")? : tactic
   let names ← ids.getElems.mapM resolveGlobalConstNoOverload
   liftMetaTactic fun x => do
     let destruct ← destructTactic x (← Context.populate names)
-    if !destruct.2 then
+    if !destruct.2.1 then
       logWarning "destruct made no progress."
     pure (destruct.1.map (·.2)).toList
 | `(tactic| destruct) => do
   liftMetaTactic fun x => do
     let destruct ← destructTactic x (← Context.populate #[])
-    if !destruct.2 then
+    if !destruct.2.1 then
       logWarning "destruct made no progress."
     pure (destruct.1.map (·.2)).toList
 | _ => throwUnsupportedSyntax

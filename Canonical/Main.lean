@@ -55,10 +55,13 @@ def getPremises (goal : MVarId) (consts : Array Name) (config : Config) : MetaM 
 
   return (premises, structs)
 
-def preprocess (goal : MVarId) (config : Config) (structs : Array Name) : MetaM (MVarId × (Lean.Expr → MetaM Lean.Expr)) := do
+/-- Returns the preprocessed goal, with maps `reconstruct` from a proof of it to a proof of `goal`,
+    and `forward` from a proof of `goal` to a proof of it. -/
+def preprocess (goal : MVarId) (config : Config) (structs : Array Name) :
+    MetaM (MVarId × (Lean.Expr → MetaM Lean.Expr) × (Lean.Expr → MetaM Lean.Expr)) := do
   if config.destruct then
     return ← Destruct.destructCanonical goal structs
-  return (goal, pure)
+  return (goal, pure, pure)
 
 /-- Run Canonical asynchronously, so that we can check for cancellation. -/
 def runCanonical (decl : Decl) (timeout : UInt64) (config : Config) : MetaM CanonicalResult := do

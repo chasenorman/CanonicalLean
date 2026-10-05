@@ -23,15 +23,21 @@ def registerSimpPremise (attribution : String) (type : Lean.Expr) : ToCanonicalM
         return true
   return false
 
-/-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate. -/
-def definePremise (const : Name) (simpOnly : Bool := false) : ToCanonicalM Unit := do
+/-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate.
+    Returns each destructed premise expression, with its `pack` and component metavariables. -/
+def definePremise (const : Name) (simpOnly : Bool := false) :
+    ToCanonicalM (Array (Lean.Expr × Lean.Expr × Array Lean.Expr)) := do
   let (modified1, monomorphized) ← monomorphizePremise const
+  let mut destructedPremises := #[]
   for (expr, type, name) in monomorphized do
     if !(← registerSimpPremise const.toString type) && !simpOnly then
-      let (modified2, destructed) ← destructPremise const expr type name simpOnly
+      let (bij?, destructed) ← destructPremise const expr type name simpOnly
+      if let some (pack, metas) := bij? then
+        destructedPremises := destructedPremises.push (expr, pack, metas)
       for (_expr, type, name) in destructed do
-        if !modified1 && !modified2 then let _ ← defineConst const
+        if !modified1 && bij?.isNone then let _ ← defineConst const
         else let _ ← define name.toString type
+  return destructedPremises
 
 def addSimpLemmas : ToCanonicalM Unit := do
   withReader (fun ctx => { ctx with polarity := .premise }) do
@@ -44,7 +50,31 @@ def addSimpLemmas : ToCanonicalM Unit := do
           attempted := attempted.insert thm
           let _ ← definePremise thm true
 
-def toCanonical_ (name : String) (goal : Lean.Expr) (premises : Array Name) : ToCanonicalM Decl := do
+/-- Replace each destructed premise with `pack` of its component metavariables. -/
+def substDestructed (destructed : Array (Lean.Expr × Lean.Expr × Array Lean.Expr)) (e : Lean.Expr) :
+    MetaM Lean.Expr := do
+  let mut e := e
+  for (premise, pack, metas) in destructed do
+    -- Monomorphized premises are not yet supported.
+    let .const name _ := premise | continue
+    e ← Meta.transform e (post := fun x => do
+      if x.isConstOf name && (← isDefEq x premise) then
+        return .done (Destruct.applyN pack metas)
+      return .continue)
+  return e
+
+/-- Translate `witness`, a proof of `goal`, into the problem built so far,
+    given the premises that were `destructed`. -/
+def witnessToCanonical (goal witness : Lean.Expr) (destructed : Array (Lean.Expr × Lean.Expr × Array Lean.Expr)) :
+    ToCanonicalM Canonical.Expr := do
+  let witness ← Core.betaReduce (← substDestructed destructed witness)
+  let witness ← Destruct.cancel (← Destruct.Context.populate (← read).structures).translations witness
+  let witness ← Destruct.reduceProjs witness
+  let witness ← Meta.transform witness (post := fun e => return .done (← whnf e))
+  toTerm witness goal (← typeArity goal).params.toList
+
+def toCanonical_ (name : String) (goal : Lean.Expr) (premises : Array Name) (witness : Option Lean.Expr := none) :
+    ToCanonicalM (Decl × Option Canonical.Expr) := do
   -- Local Context
   let lets ← withReader (fun ctx => { ctx with polarity := .premise }) do
     (← getLCtx).foldlM (init := #[]) fun lets decl =>
@@ -54,9 +84,9 @@ def toCanonical_ (name : String) (goal : Lean.Expr) (premises : Array Name) : To
   let type ← toType goal
 
   -- Constant Symbol Premises
-  withReader (fun ctx => { ctx with polarity := .premise }) do
-    for premise in premises do
-      let _ ← definePremise premise
+  let destructed ← withReader (fun ctx => { ctx with polarity := .premise }) do
+    premises.foldlM (init := #[]) fun destructed premise => do
+      pure (destructed ++ (← definePremise premise))
 
   -- Simp Lemmas
   if (← read).config.simp then
@@ -65,14 +95,19 @@ def toCanonical_ (name : String) (goal : Lean.Expr) (premises : Array Name) : To
   let lets := lets ++ (← get).definitions.toList.toArray.map fun ⟨name, defn⟩ =>
     { name, equations := defn.equations, type := defn.type.toOption }
 
+  -- After `lets`, so that the problem does not include what only the witness needs.
+  let witness ← witness.mapM (witnessToCanonical goal · destructed)
+
   let _ ← finalizeMonos
 
-  return { name, type := some { type with lets := lets ++ type.lets } }
+  return ({ name, type := some { type with lets := lets ++ type.lets } }, witness)
 
-/-- Convert `goal` to a `Decl` named `name`, with `premises` and all included definitions. -/
-def toCanonical (name : String) (goal : Lean.Expr) (premises : Array Name) (structures : Array Name) (config : Config) : MetaM Decl := do
+/-- Convert `goal` to a `Decl` named `name`, with `premises` and all included definitions.
+    If given `witness`, a proof of `goal`, also translates it into the resulting problem. -/
+def toCanonical (name : String) (goal : Lean.Expr) (premises : Array Name) (structures : Array Name) (config : Config)
+    (witness : Option Lean.Expr := none) : MetaM (Decl × Option Canonical.Expr) := do
   let lctx ← getLCtx
-  (((toCanonical_ name goal premises).run
+  (((toCanonical_ name goal premises witness).run
     {
       arities := ← lctx.foldlM (fun arities decl => do
         pure (arities.insert decl.fvarId (← typeArity decl.type)))

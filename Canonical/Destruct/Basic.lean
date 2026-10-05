@@ -130,7 +130,10 @@ def reduceProjs (e : Expr) : MetaM Expr :=
     return .visit r)
 
 -- Interfaces
-partial def destructTactic (goal : MVarId) (context : Context) : MetaM (Array (Array FVarId × MVarId) × Bool) := do
+/-- Destructs `goal` into new goals. Also returns whether progress was made, and a map from a proof
+    of `goal` to proofs of the new goals (each in the context of its new goal). -/
+partial def destructTactic (goal : MVarId) (context : Context) :
+    MetaM (Array (Array FVarId × MVarId) × Bool × (Expr → MetaM (Array Expr))) := do
   let toRevert ← goal.withContext do
     let mut toRevert := #[]
     let instances ← (← getLCtx).getFVarIds.filterM fun name => do pure (← name.getBinderInfo).isInstImplicit
@@ -149,9 +152,16 @@ partial def destructTactic (goal : MVarId) (context : Context) : MetaM (Array (A
     let goalInfo ← (mvars.zip binderNames).mapM fun (mvar, name) => do
       mvar.mvarId!.setUserName name
       mvar.mvarId!.introNP (bij.arities.take toRevert.size).sum
-    return (goalInfo, bij.madeProgress)
+    let forward proof := do
+      let proof ← goal.withContext do mkLambdaFVars (toRevert.map .fvar) proof
+      return (bij.unpack.zip goalInfo).map fun (unpack, fvars, _) =>
+        applyN (apply unpack proof) (fvars.map .fvar)
+    return (goalInfo, bij.madeProgress, forward)
 
-def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (Expr → MetaM Expr)) := do
+/-- Destructs `goal` into a single new goal. Returns it, together with maps `reconstruct` from a proof
+    of the new goal to a proof of `goal`, and `forward` from a proof of `goal` to one of the new goal. -/
+def destructCanonical (goal : MVarId) (names : Array Name) :
+    MetaM (MVarId × (Expr → MetaM Expr) × (Expr → MetaM Expr)) := do
   let env ← getEnv
   let consts ← (← goal.getRelevantConstants).toArray.filterMapM getStruct
   let consts ← consts.filterM fun name => do pure !isClass env name
@@ -166,5 +176,11 @@ def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (E
     let ⟨_, _, assignment⟩ := ← abstractMVars
       (← instantiateMVars (← getExprMVarAssignment? goal).get!)
     let assignment ← reduceProjs (← betaReduce assignment)
-    return (result.2, fun x => do
-      reduceProjs (← betaReduce (Canonical.apply assignment [← mkLambdaFVars (result.1.map .fvar) x])))
+    let reconstruct x := do
+      reduceProjs (← betaReduce (Canonical.apply assignment [← mkLambdaFVars (result.1.map .fvar) x]))
+    -- `next` has type `(Destruct : STAR (Sort u)) → (typ → Destruct) → Destruct`.
+    let forward proof := do
+      let dnegProof ← forallBoundedTelescope (← next.getType) (some 2) fun xs _ =>
+        mkLambdaFVars xs (.app xs[1]! proof)
+      return (← destruct.2.2 dnegProof)[0]!
+    return (result.2, reconstruct, forward)

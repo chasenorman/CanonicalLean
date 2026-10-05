@@ -3,7 +3,15 @@ import Canonical
 
 open Lean Meta
 
-def canonicalSimple (type : Expr) (names : NameSet) (verbose := false) : MetaM (Array Expr) := do
+/-- The head symbols in `e` that `e` does not bind. -/
+partial def freeHeads (e : Canonical.Expr) (bound : Std.HashSet String := {}) : Std.HashSet String :=
+  let bound := (e.params ++ e.lets).foldl (·.insert ·.name) bound
+  let heads : Std.HashSet String := if bound.contains e.spine.head then {} else {e.spine.head}
+  e.spine.args.foldl (fun heads arg => (freeHeads arg bound).fold (·.insert ·) heads) heads
+
+/-- If `witness`, a proof of `type`, is given, also prints (when `verbose`) its translation into the problem. -/
+def canonicalSimple (type : Expr) (names : NameSet) (verbose := false) (witness : Option Expr := none) :
+    MetaM (Array Expr) := do
   IO.setNumHeartbeats 0
   tryCatchRuntimeEx (handler := fun e => do IO.throwServerError (← e.toMessageData.toString); pure #[]) do
     let premises := names.toArray
@@ -13,12 +21,18 @@ def canonicalSimple (type : Expr) (names : NameSet) (verbose := false) : MetaM (
     let premises ← premises.filterM fun name => do pure (← Destruct.getStruct name).isNone
     let config := { }
     let goal ← mkFreshExprMVar type
-    let (goal', reconstruct) ← Canonical.withArityUnfold config.monomorphize do
+    let (goal', reconstruct, forward) ← Canonical.withArityUnfold config.monomorphize do
       Canonical.preprocess goal.mvarId! config structs
-    let decl ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
-      Canonical.toCanonical "proof" (← goal'.getType) premises (structs.push ``Canonical.Pi) config
+    let witness ← witness.mapM forward
+    let (decl, witness) ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
+      Canonical.toCanonical "proof" (← goal'.getType) premises (structs.push ``Canonical.Pi) config witness
     if verbose then
       IO.println s!"\n{decl.type}\n"
+      if let some witness := witness then
+        IO.println s!"Witness:\n{witness}\n"
+        let problem := decl.type.get!
+        let declared := (problem.params ++ problem.lets).map (·.name)
+        IO.println s!"Undeclared in the problem: {(freeHeads witness).toList.filter (!declared.contains ·)}\n"
     let result ← Canonical.runCanonical decl 1 config
     Canonical.postprocess result goal' config reconstruct
 
