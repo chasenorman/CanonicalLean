@@ -95,8 +95,7 @@ def toCanonical_ (name : String) (goal : Lean.Expr) (premises : Array Name) (wit
   let lets := lets ++ (← get).definitions.toList.toArray.map fun ⟨name, defn⟩ =>
     { name, equations := defn.equations, type := defn.type.toOption }
 
-  -- After `lets`, so that the problem does not include what only the witness needs.
-  let witness ← witness.mapM (witnessToCanonical goal · destructed)
+  let witness ← try witness.mapM (witnessToCanonical goal · destructed) catch _ => pure none
 
   let _ ← finalizeMonos
 

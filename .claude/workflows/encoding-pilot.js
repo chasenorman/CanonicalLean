@@ -149,7 +149,7 @@ This goal failed in a robustness sweep over the standard library:
 
 Running it prints the goal, the Canonical problem (the +debug encoding), a witness (the known Lean proof
 translated into the problem, not yet type-checked), the head symbols the witness uses that the problem does not
-declare, and whether Canonical found a proof.
+declare, and whether Canonical found a proof. Keep any scratch files inside your worktree.
 
 1. Identify the encoding issues that lead to this failure.
 2. Keep only the issues linked to a generalizable oversight.

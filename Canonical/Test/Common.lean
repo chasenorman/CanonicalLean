@@ -23,16 +23,23 @@ def canonicalSimple (type : Expr) (names : NameSet) (verbose := false) (witness 
     let goal ← mkFreshExprMVar type
     let (goal', reconstruct, forward) ← Canonical.withArityUnfold config.monomorphize do
       Canonical.preprocess goal.mvarId! config structs
-    let witness ← witness.mapM forward
-    let (decl, witness) ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
-      Canonical.toCanonical "proof" (← goal'.getType) premises (structs.push ``Canonical.Pi) config witness
+    let forwarded : Option (Except String Expr) ← witness.mapM fun witness =>
+      tryCatchRuntimeEx (.ok <$> forward witness) fun e => return .error (← e.toMessageData.toString)
+    let (decl, translated) ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
+      Canonical.toCanonical "proof" (← goal'.getType) premises (structs.push ``Canonical.Pi) config
+        (forwarded.bind (·.toOption))
     if verbose then
-      IO.println s!"\n{decl.type.get!}\n"
-      if let some witness := witness then
+      let problem := decl.type.get!
+      IO.println s!"\n{problem}\n"
+      match forwarded, translated with
+      | some (.error e), _ => IO.println s!"Witness failed: {e}\n"
+      | some (.ok _), none => IO.println "Witness failed.\n"
+      | _, some witness =>
         IO.println s!"Witness:\n{witness}\n"
-        let problem := decl.type.get!
         let declared := (problem.params ++ problem.lets).map (·.name)
-        IO.println s!"Undeclared in the problem: {(freeHeads witness).toList.filter (!declared.contains ·)}\n"
+        let undeclared := (freeHeads witness).toList.filter (!declared.contains ·)
+        unless undeclared.isEmpty do IO.println s!"Undeclared in the problem: {undeclared}\n"
+      | none, _ => pure ()
     let result ← Canonical.runCanonical decl 1 config
     Canonical.postprocess result goal' config reconstruct
 
