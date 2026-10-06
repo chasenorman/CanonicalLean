@@ -27,7 +27,7 @@ def canonicalSimple (type : Expr) (names : NameSet) (verbose := false) (witness 
     let (decl, witness) ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
       Canonical.toCanonical "proof" (← goal'.getType) premises (structs.push ``Canonical.Pi) config witness
     if verbose then
-      IO.println s!"\n{decl.type}\n"
+      IO.println s!"\n{decl.type.get!}\n"
       if let some witness := witness then
         IO.println s!"Witness:\n{witness}\n"
         let problem := decl.type.get!

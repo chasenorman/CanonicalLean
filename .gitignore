@@ -2,3 +2,4 @@
 .lake
 robustness.txt
 debug.json
+.claude/settings.local.json
