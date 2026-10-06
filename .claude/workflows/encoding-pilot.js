@@ -69,6 +69,7 @@ const WORK = {
     },
     diff: { type: 'string', description: 'outcome fix: `git diff` of your one change' },
     description: { type: 'string', description: 'outcome fix: one sentence describing the change' },
+    explanation: { type: 'string', description: 'outcome fix: the oversight the change addresses, and why it is a justifiable improvement' },
     escalation: { type: 'string', description: 'outcome escalation: what is wrong, and what you observed' },
   },
   required: ['outcome', 'issues'],
@@ -123,7 +124,7 @@ anything else, and do not try to fix failures.
 ${diff}
 CANONICAL_DIFF_END
 5. lake -d ${HARNESS} build Canonical
-6. lake -d ${HARNESS} env lean ${HARNESS}/Results/ITP.lean
+6. lake -d ${HARNESS} lean ${HARNESS}/Results/ITP.lean
 7. git -C ${PKG} checkout -- .
 8. git -C ${PKG} clean -fd
 
@@ -187,6 +188,9 @@ ${CANONICAL}
 ${CRITERIA}
 A worker proposed this change after studying the failure \`${line}\`. Its description: "${work.description}".
 
+Its explanation:
+${work.explanation ?? '(none given)'}
+
 ${work.diff}
 
 Applying it to the Mathlib harness and building Results/ITP.lean: ${evaluation ? (evaluation.builds ? 'succeeded' : `failed${evaluation.applied ? '' : ' (the diff did not apply)'}:\n${evaluation.output ?? ''}`) : 'not evaluated'}.
@@ -219,7 +223,7 @@ if (notDispatched.length) log(`Paused: ${notDispatched.length} failures were not
 return {
   candidates: candidates.map(r => ({
     line: r.line, probability: r.grade.probability, description: r.grade.description, sameAs: r.grade.sameAs,
-    reasons: r.grade.reasons, diff: r.work.diff, evaluation: r.evaluation, issues: r.work.issues,
+    reasons: r.grade.reasons, explanation: r.work.explanation, diff: r.work.diff, evaluation: r.evaluation, issues: r.work.issues,
   })),
   declined: done.filter(r => r.work.outcome === 'declined').map(r => ({ line: r.line, issues: r.work.issues })),
   notes,
