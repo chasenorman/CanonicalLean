@@ -66,5 +66,5 @@ unsafe def runMetaWith (extra : Array Name) (x : MetaM α) : IO α := do
   enableInitializersExecution
   let imports := (#[`Canonical] ++ extra).map ({ module := · })
   let env ← importModules imports {} (loadExts := true)
-  let ctx : Core.Context := { fileName := "<canonical-test>", fileMap := default, maxHeartbeats := 100000 }
+  let ctx : Core.Context := { fileName := "<canonical-test>", fileMap := default, maxHeartbeats := 100000000 }
   (·.1) <$> x.toIO ctx { env }
