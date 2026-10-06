@@ -61,6 +61,6 @@ def prefixName (binderName : Name) (userName : Name) : Name :=
 def getStruct (name : Name) : MetaM (Option Name) := do
   let env ← getEnv
   if let some (.ctorInfo info) := env.find? name then
-    if isStructure env info.name then
-      return info.name
+    if isStructure env info.induct then
+      return info.induct
   return env.getProjectionStructureName? name
