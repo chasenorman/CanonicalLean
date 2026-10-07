@@ -210,7 +210,7 @@ mutual
           withReader (fun ctx => { ctx with arities := ctx.arities.insertMany arities }) do
             withConfig (fun cfg => { cfg with iota := false }) do
               -- convert an equality of functions into an extensional equality of their applications
-              let lhs ← withReader ({ · with noTypes := true }) do toSpine (← whnf (mkAppN lhs txs)) (synthInst := false)
+              let lhs ← toSpine (← whnf (mkAppN lhs txs)) (synthInst := false)
               if returnInvalid || (← validSimpLemma (xs ++ txs) lhs) then
                 return some ⟨lhs, ← toSpine (← whnf (mkAppN rhs txs)), attribution, true⟩
               else return none
