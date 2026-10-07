@@ -11,7 +11,7 @@ export const meta = {
 // args: {
 //   base: string          // commit printed by encoding-pilot-setup.sh
 //   failures: string[]    // `lake exe debug ...` lines (already shuffled)
-//   graded?: { description: string, probability: number, notes?: string }[]  // from earlier runs, with review notes
+//   graded?: { issue: string, implementation: string, probability: number, notes?: string }[]  // with review notes
 //   topK?: number         // how many graded candidates the overseer sees (default 20)
 //   concurrency?: number  // workers running at once (default 8)
 // }
@@ -80,7 +80,7 @@ const GRADE = {
   properties: {
     probability: { type: 'number', minimum: 0, maximum: 1, description: 'that the author adopts this as a correct encoding improvement' },
     reason: { type: 'string', description: 'one sentence' },
-    sameAs: { type: 'string', description: 'the description of a listed candidate that makes the same change, if any' },
+    sameAs: { type: 'string', description: 'the issue of a listed candidate that makes the same change, if any' },
     exitCode: { type: 'integer', description: 'of the build command' },
     evaluation: { type: 'string', description: 'the output of the build command' },
   },
@@ -101,7 +101,7 @@ const notes = []
 const notDispatched = []
 
 const topGraded = () => [...graded].sort((a, b) => b.probability - a.probability).slice(0, TOP_K)
-  .map(g => `- (${g.probability.toFixed(2)}) ${g.description}${g.notes ? `\n  Author's notes: ${g.notes}` : ''}`).join('\n')
+  .map(g => `- (${g.probability.toFixed(2)}) ${g.issue} ${g.implementation}${g.notes ? `\n  Author's notes: ${g.notes}` : ''}`).join('\n')
 
 async function processFailure(line, i) {
   const work = await agent(`
@@ -164,13 +164,14 @@ The highest-rated candidates graded so far:
 ${topGraded() || '(none yet)'}
 
 Judge, from what is shown here, how likely the author is to adopt this as a correct encoding improvement, given
-the stringent requirements on code simplicity. If a listed candidate makes the same change, give its description.`,
+the stringent requirements on code simplicity. If a listed candidate makes the same change, give its issue.`,
     { label: `grade ${i}`, phase: 'Oversee', schema: GRADE })
   if (grade?.exitCode === 1) {
     paused = true
     notes.push({ line, note: `The harness package was not clean at ${BASE}; the run was paused.\n${grade.evaluation}` })
   }
-  if (grade) graded.push({ description: `${work.issue} ${work.implementation}`, probability: grade.probability })
+  // A duplicate is already represented in the list by the candidate it duplicates.
+  if (grade && !grade.sameAs) graded.push({ issue: work.issue, implementation: work.implementation, probability: grade.probability })
   return { line, work, grade }
 }
 

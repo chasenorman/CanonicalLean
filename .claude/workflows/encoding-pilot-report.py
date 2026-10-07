@@ -14,15 +14,38 @@ if isinstance(result, str):
 directory = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'candidates', sys.argv[2])
 os.makedirs(directory, exist_ok=True)
 
-summary = [f'# {sys.argv[2]}', '']
-for k, c in enumerate(result['candidates'], 1):
-    patch = f"{k:02d}-{c['probability']:.2f}.patch"
+candidates = result['candidates']
+patches = [f"{k:02d}-{c['probability']:.2f}.patch" for k, c in enumerate(candidates, 1)]
+for c, patch in zip(candidates, patches):
     header = '\n'.join(f'# {line}' for line in (c.get('explanation') or '').splitlines())
     with open(os.path.join(directory, patch), 'w') as f:
         f.write(header + '\n\n' + c['diff'].rstrip('\n') + '\n')
+
+
+def original(k):
+    """The index of the candidate that candidate `k` duplicates (following chains), or `k` if none in this run."""
+    seen = {k}
+    while same := candidates[k].get('sameAs'):
+        matches = [j for j, c in enumerate(candidates) if c.get('issue') and same.startswith(c['issue']) and j not in seen]
+        if not matches:
+            break
+        k = matches[0]
+        seen.add(k)
+    return k
+
+
+duplicates = {}
+for k in range(len(candidates)):
+    if (o := original(k)) != k:
+        duplicates.setdefault(o, []).append(k)
+
+summary = [f'# {sys.argv[2]}', '']
+for k, (c, patch) in enumerate(zip(candidates, patches)):
+    if original(k) != k:
+        continue
     evaluation = c.get('evaluation') or {}
     summary += [
-        f"## {k}. {c['probability']:.2f} — {patch}",
+        f"## {c['probability']:.2f} — {patch}",
         '',
         f"`{c['line']}`",
         '',
@@ -33,6 +56,8 @@ for k, c in enumerate(result['candidates'], 1):
     ]
     if c.get('sameAs'):
         summary.append(f"- **Same as:** {c['sameAs']}")
+    for j in duplicates.get(k, []):
+        summary.append(f"- **Also found by** {patches[j]} (`{candidates[j]['line']}`): {candidates[j].get('implementation')}")
     summary.append('')
 
 if result.get('declined'):

@@ -1,7 +1,62 @@
 [
   {
-    "description": "Fix Destruct.getStruct to test and return the constructor's inductive type (info.induct) rather than the constructor name, so structure constructors map to their structure like projections already do.",
-    "probability": 0.65,
-    "notes": "Accepted and merged (b02dc47)."
+    "issue": "`monoPattern` only abstracts a constant's universe levels when the use-site levels happen to share names with the declaration's level parameters. So the same instance-specialized constant used at two different universe instantiations gets two separate, unrelated Canonical symbols.",
+    "implementation": "In `monoPattern`, the constant head's levels are now replaced directly with the fresh level metavariables (`.const name mvarlevels`), instead of calling `fn.instantiateLevelParams levels mvarlevels`, which only rewrites level *parameters* that share names with the declaration's own.",
+    "probability": 0.62,
+    "notes": "Rejected: monomorphization will stop abstracting over universes."
+  },
+  {
+    "issue": "Simp lemmas whose LHS head is a constructor (here `Int.ofNat_eq_coe`, which gives the rule `Int.ofNat n ↦ NatCast_natCast_0 n`) were accepted as reduction rules. That rewrites constructors away, so constructors stop being normal forms.",
+    "implementation": "`validSimpLemma` now rejects a candidate simp lemma whose LHS head is a constructor (`(← getEnv).isConstructor lhs.head.toName`).",
+    "probability": 0.62,
+    "notes": "Not adopted as written: instead of rejecting constructor-headed left-hand sides, Int.ofNat_eq_coe was added to SIMP_HARD_CODE (6b15ce6)."
+  },
+  {
+    "issue": "Every problem that involves Nat gets the injectivity rule `Eq Nat (Nat.succ u) (Nat.succ v) ↦ Eq Nat u v` twice. In this goal it appears as both `u.85/v.86` and `u.1389/v.1390`.",
+    "implementation": "The `SIMP_HARD_CODE` entry for `Nat.succ_eq_add_one` now maps to `#[]` instead of `#[``Nat.succ.injEq]`. It still keeps the `succ n = n + 1` lemma out, but no longer adds again the injectivity rule that `onTypeConst` already adds for every constructor.",
+    "probability": 0.6,
+    "notes": "Accepted (6b15ce6)."
+  },
+  {
+    "issue": "`destructCanonical` puts the whole goal type, including its own leading binders, under the `dneg` wrapper as `((∀ {m} [Monad m] ..., P) → Destruct) → Destruct`, so the goal's instance binders never enter the local context and monomorphization can't use them.",
+    "implementation": "`destructCanonical` now introduces the goal's leading parameters with `forallTelescope` before applying `dneg`. `destructTactic` then handles them through its existing revert logic: it keeps the instance binders (and the variables they depend on) in context and reverts and re-introduces the rest. `reconstruct` closes the proof over `params` with `mkLambdaFVars`, and `forward` applies the witness to `params`.",
+    "probability": 0.5,
+    "notes": "Rejected: the goal's instance binders would be a problem even without Destruct, so Destruct is not the right place for this fix."
+  },
+  {
+    "issue": "monoTransformStep assumes that when isDefEq succeeds it has assigned every pattern parameter. Lean's isDefEq skips Prop-typed arguments, so proof parameters taken from a locally built Prop instance stay unassigned and leak into the problem as undeclared global symbols.",
+    "implementation": "A monomorphization (cached or new) is accepted only if unification succeeds and every one of its abstracted parameters ends up assigned. Otherwise the term falls back to the existing non-monomorphized path.",
+    "probability": 0.45,
+    "notes": "Rejected in favor of unifying argument by argument (isDefEqProofRelevant), which assigns the metavariables instead of giving up."
+  },
+  {
+    "issue": "When a monomorphization pattern has a Prop instance built from a constructor and a local proof, such as `@Fin.ofNat n (NeZero.mk ?out) a`, `isDefEq` never assigns the proof metavariable `?out`. It then leaks into the problem as a global symbol `out` whose type mentions a rule-bound variable, and the run crashes with \"Undeclared variable: n.1674\".",
+    "implementation": "Added `isDefEqPattern` in Monomorphize/Basic.lean: it unifies two applications with the same constant head argument by argument and recursively, and otherwise falls back to `isDefEqGuarded`. Both the mono-creation call and the cached-spec matching call now use it, so metavariables under proof arguments get assigned.",
+    "probability": 0.42,
+    "notes": "Accepted as isDefEqProofRelevant, with withoutProofIrrelevance moved inside it (6b15ce6)."
+  },
+  {
+    "issue": "`monomorphizePremise` throws away every monomorphization whose statement has an instance binder anywhere inside it, so a premise like `exists_bucket_of_update` (which has `∀ [LawfulHashable α], …` under its `∃`) never appears in the problem.",
+    "implementation": "In `monomorphizePremise`, test only the outer forall telescope for leftover instance binders (the same check `monoTransformStep` uses), rather than `getAllBinderInfos`, which searches the whole statement.",
+    "probability": 0.4,
+    "notes": "Accepted, using getFunInfo's parameters instead of a forallTelescope (6b15ce6)."
+  },
+  {
+    "issue": "Translating a rewrite rule's left-hand side adds the instances in it to `candidateInsts`. Monomorphized simp lemmas then create new Decidable candidates that compound, and the encoding times out before Canonical runs.",
+    "implementation": "In `toRule`, the code saves `candidateInsts` before translating the lhs and restores it afterwards. Rule lhs instances therefore never become monomorphization candidates, while instances in the rhs still do.",
+    "probability": 0.4,
+    "notes": "Rejected in favor of saving and restoring the ToCanonical and MonoState states in registerSimpPremise (accepted from an earlier run)."
+  },
+  {
+    "issue": "A premise or simp lemma can be turned into a reduction rule whose left-hand side has a reducible subterm (here `Std.Iter.toIterM ...`, which has an unconditional rule from `toIterM.eq_1`); such a rule can never fire, and the premise is then removed from the problem.",
+    "implementation": "`validSimpLemma` now rejects a candidate rule when a strict subterm of its left-hand side already matches the left-hand side of an existing rule for that subterm's head (checked by the new helpers `matchesPattern` and `anySubterm`). A rejected premise falls back to being an ordinary definition.",
+    "probability": 0.4,
+    "notes": "Not adopted."
+  },
+  {
+    "issue": "When monomorphization cannot resolve a premise's instance arguments, `monomorphizePremise` returns an empty list. The premise is then silently left out of the problem, even though the translation could represent it with `<synthInstance>` arguments.",
+    "implementation": "In `monomorphizePremise`, return the monomorphizations only when at least one exists. Otherwise fall through to the existing generic path that returns the constant unchanged.",
+    "probability": 0.35,
+    "notes": "Not adopted."
   }
 ]
