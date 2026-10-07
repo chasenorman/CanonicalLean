@@ -8,6 +8,12 @@ HARNESS=$HOME/Canonical/lean
 PKG=$HARNESS/.lake/packages/Canonical
 SOURCE=(Canonical.lean Canonical lakefile.lean ':!Canonical/Test')
 
+# Remove the worktrees and branches of earlier runs; their diffs are in each run's output.
+git -C "$REPO" worktree list --porcelain | sed -n 's/^worktree //p' | grep "^$REPO/.claude/worktrees/" |
+  while read -r w; do git -C "$REPO" worktree remove --force "$w"; done || true
+git -C "$REPO" branch --list 'worktree-wf_*' --format='%(refname:short)' |
+  while read -r b; do git -C "$REPO" branch -D "$b" > /dev/null; done
+
 # Workers' worktrees are made from HEAD, so the source the harness builds must match HEAD's.
 if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=no -- "${SOURCE[@]}")" ]; then
   echo "Commit first: uncommitted changes to Canonical's source would not be in the workers' base." >&2

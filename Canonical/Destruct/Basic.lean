@@ -83,6 +83,7 @@ partial def destructPi (t : Expr) (binderName : Name) (inputName : Name) (inputT
   (outputType : Expr) (inputInfo : BinderInfo) : DestructM Bijection := do
   let input ← destructMain inputType inputName
   lambdaBoundedTelescope input.pack input.unpack.size fun vars packed => do
+  withNewBinderInfos (vars.map (·.fvarId!, inputInfo)) do
     let output ← destructMain (outputType.instantiate1 packed) binderName
 
     let unpack ← withLocalDecl binderName .default t fun f => do

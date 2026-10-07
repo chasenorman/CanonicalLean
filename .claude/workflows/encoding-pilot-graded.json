@@ -1,0 +1,7 @@
+[
+  {
+    "description": "Fix Destruct.getStruct to test and return the constructor's inductive type (info.induct) rather than the constructor name, so structure constructors map to their structure like projections already do.",
+    "probability": 0.65,
+    "notes": "Accepted and merged (b02dc47)."
+  }
+]

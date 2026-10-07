@@ -4,3 +4,4 @@ robustness.txt
 debug.json
 .claude/settings.local.json
 .claude/worktrees/
+.claude/workflows/candidates/

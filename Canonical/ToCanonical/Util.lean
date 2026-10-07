@@ -155,15 +155,16 @@ def destructPremise (const : Name) (expr type : Lean.Expr) (name : Name) (simp :
     let destruct := if let .some struct := ← Destruct.getStruct const
       then { destruct with structures := destruct.structures.erase struct } else destruct
     let bij ← (Destruct.destructMain type name).run destruct
-    let (metas, _, _) ← lambdaMetaTelescope' bij.pack bij.unpack.size .syntheticOpaque
-    let mut result := #[]
-    for (destruct, m) in bij.unpack.zip metas do
-      let expr := destruct.bindingBody!.instantiate1 expr
-      -- m.mvarId!.assign expr
-      modifyThe MonoState fun s => { s with
-        mono := s.mono.insert (.sort .zero) (⟨m.mvarId!, ⟨expr, []⟩⟩ :: ((s.mono.get? (.sort .zero)).getD []))
-      }
-      let (mvarName, mvarType) ← toHead m
-      result := result.push (expr, mvarType, mvarName)
-    return (some (bij.pack, metas), result)
+    if bij.madeProgress then
+      let (metas, _, _) ← lambdaMetaTelescope' bij.pack bij.unpack.size .syntheticOpaque
+      let mut result := #[]
+      for (destruct, m) in bij.unpack.zip metas do
+        let expr := destruct.bindingBody!.instantiate1 expr
+        -- m.mvarId!.assign expr
+        modifyThe MonoState fun s => { s with
+          mono := s.mono.insert (.sort .zero) (⟨m.mvarId!, ⟨expr, []⟩⟩ :: ((s.mono.get? (.sort .zero)).getD []))
+        }
+        let (mvarName, mvarType) ← toHead m
+        result := result.push (expr, mvarType, mvarName)
+      return (some (bij.pack, metas), result)
   return (none, #[(expr, type, name)])

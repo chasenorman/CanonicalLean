@@ -4,8 +4,7 @@ export const meta = {
   whenToUse: 'After running encoding-pilot-setup.sh, with `lake exe debug ...` lines from `lake exe robustness`.',
   phases: [
     { title: 'Work', detail: 'one worker per failure: issues → generalizable oversights → at most one fix' },
-    { title: 'Evaluate', detail: 'apply each diff to the Mathlib harness and build Results/ITP.lean (one at a time)' },
-    { title: 'Oversee', detail: 'grade each diff, and handle escalations' },
+    { title: 'Oversee', detail: 'build each diff in the Mathlib harness and grade it, and handle escalations' },
   ],
 }
 
@@ -14,17 +13,17 @@ export const meta = {
 //   failures: string[]    // `lake exe debug ...` lines (already shuffled)
 //   graded?: { description: string, probability: number, notes?: string }[]  // from earlier runs, with review notes
 //   topK?: number         // how many graded candidates the overseer sees (default 20)
-//   concurrency?: number  // workers running at once (default 6)
+//   concurrency?: number  // workers running at once (default 8)
 // }
 const BASE = args.base
 const FAILURES = args.failures
 const TOP_K = args.topK ?? 20
-const CONCURRENCY = args.concurrency ?? 6
+const CONCURRENCY = args.concurrency ?? 8
 const graded = [...(args.graded ?? [])]
 
 const MAIN = '/Users/chasenorman/CanonicalLean'
-const HARNESS = '/Users/chasenorman/Canonical/lean'
-const PKG = `${HARNESS}/.lake/packages/Canonical`
+const EVALUATE = `${MAIN}/.claude/workflows/encoding-pilot-evaluate.sh`
+const WORKER = `${MAIN}/.claude/workflows/encoding-pilot-worker.sh`
 
 const CANONICAL = `
 Canonical is a type inhabitation solver for dependent type theory modulo reduction rules. CanonicalLean is a
@@ -68,33 +67,24 @@ const WORK = {
       },
     },
     diff: { type: 'string', description: 'outcome fix: `git diff` of your one change' },
-    description: { type: 'string', description: 'outcome fix: one sentence describing the change' },
+    issue: { type: 'string', description: 'outcome fix: one sentence stating the issue' },
+    implementation: { type: 'string', description: 'outcome fix: one sentence stating how the change addresses it' },
     explanation: { type: 'string', description: 'outcome fix: the oversight the change addresses, and why it is a justifiable improvement' },
     escalation: { type: 'string', description: 'outcome escalation: what is wrong, and what you observed' },
   },
   required: ['outcome', 'issues'],
 }
 
-const EVALUATION = {
-  type: 'object',
-  properties: {
-    baseOk: { type: 'boolean', description: `${PKG} was at ${BASE} before applying` },
-    applied: { type: 'boolean' },
-    builds: { type: 'boolean', description: 'both lake commands succeeded' },
-    output: { type: 'string', description: 'the last 40 lines of output of the first failing command, if any' },
-  },
-  required: ['baseOk', 'applied', 'builds'],
-}
-
 const GRADE = {
   type: 'object',
   properties: {
     probability: { type: 'number', minimum: 0, maximum: 1, description: 'that the author adopts this as a correct encoding improvement' },
-    description: { type: 'string', description: 'one sentence describing the change' },
+    reason: { type: 'string', description: 'one sentence' },
     sameAs: { type: 'string', description: 'the description of a listed candidate that makes the same change, if any' },
-    reasons: { type: 'string' },
+    exitCode: { type: 'integer', description: 'of the build command' },
+    evaluation: { type: 'string', description: 'the output of the build command' },
   },
-  required: ['probability', 'description', 'reasons'],
+  required: ['probability', 'reason', 'exitCode', 'evaluation'],
 }
 
 const DECISION = {
@@ -110,38 +100,13 @@ let paused = false
 const notes = []
 const notDispatched = []
 
-// Evaluations share the harness's package directory, so they run one at a time.
-let evaluations = Promise.resolve()
-const evaluate = (diff, label) => {
-  const run = evaluations.then(() => agent(`
-Run exactly these commands, in order, each as a separate command, and report the results. Do not change
-anything else, and do not try to fix failures.
-
-1. git -C ${PKG} checkout -- .
-2. git -C ${PKG} clean -fd
-3. git -C ${PKG} rev-parse HEAD  (baseOk: whether this prints ${BASE})
-4. git -C ${PKG} apply <<'CANONICAL_DIFF_END'
-${diff}
-CANONICAL_DIFF_END
-5. lake -d ${HARNESS} build Canonical
-6. lake -d ${HARNESS} lean ${HARNESS}/Results/ITP.lean
-7. git -C ${PKG} checkout -- .
-8. git -C ${PKG} clean -fd
-
-If step 3 or 4 fails, skip to step 7. Always run steps 7 and 8.`,
-    { label: `evaluate ${label}`, phase: 'Evaluate', schema: EVALUATION, effort: 'low' }))
-  evaluations = run.catch(() => {})
-  return run
-}
-
 const topGraded = () => [...graded].sort((a, b) => b.probability - a.probability).slice(0, TOP_K)
   .map(g => `- (${g.probability.toFixed(2)}) ${g.description}${g.notes ? `\n  Author's notes: ${g.notes}` : ''}`).join('\n')
 
 async function processFailure(line, i) {
   const work = await agent(`
 ${CANONICAL}
-You are in a fresh git worktree of CanonicalLean. First copy the build directory from the main checkout,
-\`cp -R ${MAIN}/.lake .lake\`, then run \`lake build debug\`.
+You are in a fresh git worktree of CanonicalLean. First run \`bash ${WORKER} ${BASE}\`, which sets it up.
 
 This goal failed in a robustness sweep over the standard library:
 
@@ -178,22 +143,22 @@ running finish).`, { label: `escalation ${i}`, phase: 'Oversee', schema: DECISIO
   }
   if (work.outcome !== 'fix' || !work.diff?.trim()) return { line, work }
 
-  const evaluation = await evaluate(work.diff, i)
-  if (evaluation && !evaluation.baseOk) {
-    paused = true
-    notes.push({ line, note: `The harness package was not at ${BASE}; the run was paused.` })
-  }
   const grade = await agent(`
 ${CANONICAL}
 ${CRITERIA}
-A worker proposed this change after studying the failure \`${line}\`. Its description: "${work.description}".
+A worker proposed this change after studying the failure \`${line}\`.
+Issue: ${work.issue}
+Implementation: ${work.implementation}
 
 Its explanation:
 ${work.explanation ?? '(none given)'}
 
-${work.diff}
+First, build it in the Mathlib harness by running exactly this command, with a 10 minute timeout. Exit code 75
+means the harness was busy; run it again. Report its exit code and output.
 
-Applying it to the Mathlib harness and building Results/ITP.lean: ${evaluation ? (evaluation.builds ? 'succeeded' : `failed${evaluation.applied ? '' : ' (the diff did not apply)'}:\n${evaluation.output ?? ''}`) : 'not evaluated'}.
+bash ${EVALUATE} ${BASE} <<'CANONICAL_DIFF_END'
+${work.diff}
+CANONICAL_DIFF_END
 
 The highest-rated candidates graded so far:
 ${topGraded() || '(none yet)'}
@@ -201,8 +166,12 @@ ${topGraded() || '(none yet)'}
 Judge, from what is shown here, how likely the author is to adopt this as a correct encoding improvement, given
 the stringent requirements on code simplicity. If a listed candidate makes the same change, give its description.`,
     { label: `grade ${i}`, phase: 'Oversee', schema: GRADE })
-  if (grade) graded.push({ description: grade.description, probability: grade.probability })
-  return { line, work, evaluation, grade }
+  if (grade?.exitCode === 1) {
+    paused = true
+    notes.push({ line, note: `The harness package was not clean at ${BASE}; the run was paused.\n${grade.evaluation}` })
+  }
+  if (grade) graded.push({ description: `${work.issue} ${work.implementation}`, probability: grade.probability })
+  return { line, work, grade }
 }
 
 // Workers are dispatched from a fixed number of lanes, so that a pause stops new workers from starting.
@@ -222,8 +191,9 @@ log(`${candidates.length} graded candidates, ${done.filter(r => r.work.outcome =
 if (notDispatched.length) log(`Paused: ${notDispatched.length} failures were not dispatched`)
 return {
   candidates: candidates.map(r => ({
-    line: r.line, probability: r.grade.probability, description: r.grade.description, sameAs: r.grade.sameAs,
-    reasons: r.grade.reasons, explanation: r.work.explanation, diff: r.work.diff, evaluation: r.evaluation, issues: r.work.issues,
+    line: r.line, probability: r.grade.probability, reason: r.grade.reason, sameAs: r.grade.sameAs,
+    issue: r.work.issue, implementation: r.work.implementation, explanation: r.work.explanation,
+    diff: r.work.diff, evaluation: { exitCode: r.grade.exitCode, output: r.grade.evaluation }, issues: r.work.issues,
   })),
   declined: done.filter(r => r.work.outcome === 'declined').map(r => ({ line: r.line, issues: r.work.issues })),
   notes,
