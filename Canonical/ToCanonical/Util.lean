@@ -137,7 +137,7 @@ def monomorphizePremise (name : Name) : ToCanonicalM (Bool × Array (Lean.Expr �
       let mut result := #[]
       for ⟨expr, idx⟩ in (← monomorphizeConst name).zipIdx do
         let type ← inferType expr
-        if !(← getAllBinderInfos type).contains .instImplicit then
+        if !(← getFunInfo expr).paramInfo.any (·.isInstImplicit) then
           let monoName := Name.mkSimple ((name.num idx).toStringWithSep "_" true)
           let mvar := (← mkFreshExprMVar type .syntheticOpaque monoName).mvarId!
           mvar.assign expr

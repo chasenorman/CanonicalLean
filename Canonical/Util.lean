@@ -158,12 +158,13 @@ def widthIndentColumnRange : TermElabM (Nat × Nat × Nat × Lsp.Range) := do
 
 /-- Replacements for certain `@[simp]` theorems with alternative encodings. -/
 def SIMP_HARD_CODE : HashMap Name (Array Name) := .ofList [
-  (`Nat.succ_eq_add_one, #[``Nat.succ.injEq]),
+  (`Nat.succ_eq_add_one, #[]),
   (`Nat.add_zero, #[``Nat.add_zero, ``Nat.add_succ, ``Nat.succ_add, ``Nat.add_assoc]),
   (`Nat.mul_one, #[``Nat.mul_succ]),
   (`Nat.one_mul, #[``Nat.succ_mul, ``Nat.mul_assoc]),
   (`Nat.one_pow, #[``Nat.pow_succ, ``Nat.pow_add, ``Nat.mul_pow]),
-  (`Nat.pow_one, #[])
+  (`Nat.pow_one, #[]),
+  (`Int.ofNat_eq_coe, #[])
 ]
 
 /-- Retrieve the `Origin`s in `trie` consisting only of constants in `constSet`.  -/

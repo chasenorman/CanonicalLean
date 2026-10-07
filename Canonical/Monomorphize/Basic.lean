@@ -172,6 +172,14 @@ partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
           return none
     instantiateMVars (mkAppN fn metas)
 
+/-- `isDefEq` that also assigns metavariables within proof arguments of `pattern`,
+    which `isDefEq` skips by proof irrelevance. -/
+partial def isDefEqProofRelevant (pattern e : Expr) : MetaM Bool := withoutProofIrrelevance do
+  let fn := pattern.getAppFn
+  if fn.isConst && fn.constName? == e.getAppFn.constName? && pattern.getAppNumArgs == e.getAppNumArgs then
+    isDefEqGuarded fn e.getAppFn <&&> (pattern.getAppArgs.zip e.getAppArgs).allM fun (p, a) => isDefEqProofRelevant p a
+  else isDefEqGuarded pattern e
+
 /-- Monomorphizes the head of `e`, creating a new monomorphization metavariable if necessary. -/
 partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
   withOptions (backward.isDefEq.respectTransparency.set · false) do withApp e fun fn _ => do
@@ -185,7 +193,7 @@ partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
           let mvarlevels ← mkFreshLevelMVars specLevels.length
           let instantiated := specBody.instantiateLevelParams specLevels mvarlevels
           let ⟨metas, _, body⟩ ← lambdaMetaTelescope instantiated
-          if ← withoutProofIrrelevance do isDefEqGuarded e body then
+          if ← isDefEqProofRelevant body e then
             let newExpr ← pure (mkAppN (.mvar specmVar) (← metas.mapM instantiateMVars))
             return .continue newExpr
 
@@ -201,7 +209,7 @@ partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
 
             let _ ← addConstants monoPattern.getUsedConstantsAsSet
 
-            let success ← withoutProofIrrelevance do isDefEq monoPattern e
+            let success ← isDefEqProofRelevant monoPattern e
             if !success then
               logWarning s!"Failed to monomorphize {fn}"
               return .continue

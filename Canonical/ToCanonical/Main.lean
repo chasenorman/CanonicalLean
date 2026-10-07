@@ -14,13 +14,15 @@ namespace Canonical
 public section
 
 /-- Attempt to include a premise of type `type` as a reduction rule, instead of a definiton.
-    Returns `true` if successful. -/
+    Returns `true` if successful. Otherwise, the symbols defined by the attempt are discarded. -/
 def registerSimpPremise (attribution : String) (type : Lean.Expr) : ToCanonicalM Bool := do
   if (← read).config.simp then
+    let (state, monoState) := (← get, ← getThe MonoState)
     if let some rule ← toRule #[attribution] type false then
       if ← addConstraints #[rule] then
         addEquations rule.lhs.head #[rule]
         return true
+    set state; set monoState
   return false
 
 /-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate.
