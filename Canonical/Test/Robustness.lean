@@ -78,8 +78,8 @@ def shuffle (xs : Array α) (seed : Nat := 0) : Array α := Id.run do
     xs := xs.swapIfInBounds i j
   return xs
 
-/-- Theorems defined in modules whose name has one of `roots` as a prefix, in a fixed random order. -/
-def sweepTargets (roots : Array Name) : MetaM (Array Name) := do
+/-- Theorems defined in modules whose name has one of `roots` as a prefix, in a random order fixed by `seed`. -/
+def sweepTargets (roots : Array Name) (seed : Nat) : MetaM (Array Name) := do
   let env ← getEnv
   let names := env.constants.fold (init := #[]) fun acc name info =>
     if !info.isTheorem || name.isInternalDetail then acc else
@@ -89,15 +89,18 @@ def sweepTargets (roots : Array Name) : MetaM (Array Name) := do
       if roots.any (·.isPrefixOf mod) then acc.push name else acc
     | none => acc
   -- Sort first, since the order of `env.constants` is not deterministic.
-  return shuffle (names.qsort (·.cmp · == .lt))
+  return shuffle (names.qsort (·.cmp · == .lt)) seed
 
-/-- `lake exe robustness [module prefix...]` (default: `Init Std`). -/
+/-- `lake exe robustness [--seed n] [module prefix...]` (defaults: `0`, `Init Std`). -/
 unsafe def main (args : List String) : IO UInt32 := do
+  let (seed, args) := match args with
+    | "--seed" :: n :: args => (n.toNat!, args)
+    | _ => (0, args)
   let roots := if args.isEmpty then #[`Init, `Std] else args.toArray.map parseName
   runMetaWith #[`Std] do
-    let targets ← sweepTargets roots
+    let targets ← sweepTargets roots seed
     let stderr ← IO.getStderr
-    stderr.putStrLn s!"Sweeping {targets.size} theorems from {roots}"
+    stderr.putStrLn s!"Sweeping {targets.size} theorems from {roots} (seed {seed})"
     let mut total := 0
     let mut success := 0
     let mut failures := 0

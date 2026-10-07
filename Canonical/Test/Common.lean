@@ -14,13 +14,9 @@ def canonicalSimple (type : Expr) (names : NameSet) (verbose := false) (witness 
     MetaM (Array Expr) := do
   IO.setNumHeartbeats 0
   tryCatchRuntimeEx (handler := fun e => do IO.throwServerError (← e.toMessageData.toString); pure #[]) do
-    let premises := names.toArray
-    let env ← getEnv
-    let structs ← premises.filterMapM Destruct.getStruct
-    let structs := structs ++ (premises.filter (isStructure env))
-    let premises ← premises.filterM fun name => do pure (← Destruct.getStruct name).isNone
     let config := { }
     let goal ← mkFreshExprMVar type
+    let (premises, structs) ← Canonical.getPremises goal.mvarId! names.toArray config
     let (goal', reconstruct, forward) ← Canonical.withArityUnfold config.monomorphize do
       Canonical.preprocess goal.mvarId! config structs
     let forwarded : Option (Except String Expr) ← witness.mapM fun witness =>

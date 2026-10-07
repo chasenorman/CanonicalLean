@@ -66,8 +66,9 @@ def canUnfold (monomorphize : Bool) (cfg : Config) (info : ConstantInfo) : CoreM
   | .default => return !(← isIrreducible info.name)
   | m =>
     let env ← getEnv
-    if (← isReducible info.name) || (UNFOLD_HARD_CODE.contains info.name)
-      || (Compiler.getInlineAttribute? env info.name matches .some .inline) then
+    if (← isReducible info.name) || UNFOLD_HARD_CODE.contains info.name
+      || Compiler.getInlineAttribute? env info.name matches .some .inline
+      || hasNeverExtractAttribute env info.name then
       return true
     -- If `monomorphize`, we only reduce `OfNat` instances.
     else if m == .instances && (← isInstance info.name) &&

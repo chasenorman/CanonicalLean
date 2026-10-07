@@ -164,14 +164,12 @@ partial def destructTactic (goal : MVarId) (context : Context) :
 def destructCanonical (goal : MVarId) (names : Array Name) :
     MetaM (MVarId × (Expr → MetaM Expr) × (Expr → MetaM Expr)) := do
   let env ← getEnv
-  let consts ← (← goal.getRelevantConstants).toArray.filterMapM getStruct
-  let consts ← consts.filterM fun name => do pure !isClass env name
   let goal ← goal.withContext do pure (← mkFreshExprMVar (← goal.getType)).mvarId!
   goal.withContext do
     let typ ← goal.getType
     let dneg := (env.find? ``Canonical.dneg).get!.value!
     let next := (← goal.apply (Canonical.apply dneg [typ]))[0]!
-    let context ← Context.populate (names ++ consts)
+    let context ← Context.populate (names.filter (!isClass env ·))
     let destruct ← destructTactic next context
     let result := destruct.1[0]!
     let ⟨_, _, assignment⟩ := ← abstractMVars

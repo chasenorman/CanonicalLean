@@ -1,5 +1,17 @@
 [
   {
+    "issue": "`preprocess` hands the goal to translation without introducing its leading binders. When the goal is a closed statement like `∀ {α cmp β t} [TransCmp cmp] [BEq α] [LawfulBEqCmp cmp] ..., P`, its instance binders never enter the local context, so monomorphization cannot use them as candidates.",
+    "implementation": "`preprocess` in Canonical/Main.lean now introduces the goal's leading binders with `introNP (getIntrosSize ...)` before the optional Destruct step, whether or not Destruct runs. `reconstruct` closes the proof back over those fvars with `mkLambdaFVars`, and `forward` applies the witness to them.",
+    "probability": 0.66,
+    "notes": "Accepted."
+  },
+  {
+    "issue": "`panic`, `panicCore` and the other `@[never_extract]` wrappers are never unfolded, so the debug message string they carry is translated into the encoding. That message is built by `mkPanicMessageWithDecl` from `String.Internal.append`, `ToString Nat` and string literals, and it pulls dozens of irrelevant String/UTF8/UInt8/BitVec/Nat.mod simp lemmas into every problem that uses a `!` function.",
+    "implementation": "`canUnfold` (Canonical/Util.lean) now also unfolds constants tagged `@[never_extract]` (`hasNeverExtractAttribute`), so `panic msg` reduces to `Inhabited.default` and the message is dropped.",
+    "probability": 0.62,
+    "notes": "Accepted."
+  },
+  {
     "issue": "`monoPattern` only abstracts a constant's universe levels when the use-site levels happen to share names with the declaration's level parameters. So the same instance-specialized constant used at two different universe instantiations gets two separate, unrelated Canonical symbols.",
     "implementation": "In `monoPattern`, the constant head's levels are now replaced directly with the fresh level metavariables (`.const name mvarlevels`), instead of calling `fn.instantiateLevelParams levels mvarlevels`, which only rewrites level *parameters* that share names with the declaration's own.",
     "probability": 0.62,
@@ -18,10 +30,58 @@
     "notes": "Accepted (6b15ce6)."
   },
   {
+    "issue": "When a constant's reduction rules are rejected as non-terminating, the symbols defined while translating those rules stay in the problem, even though nothing refers to them.",
+    "implementation": "`onDefineConst` now saves the ToCanonical and Monomorphize state before calling `constRules` and puts it back when `addConstraints` rejects the rules. This is the same save/restore that `registerSimpPremise` already does for a rejected simp premise.",
+    "probability": 0.55,
+    "notes": "Accepted."
+  },
+  {
+    "issue": "`unfoldInstDefn` unfolds projection functions that are not global instances, such as `Lean.Grind.Ring.intCast`, which is only a `local instance`. The unfolding leaves a raw `.proj` (`inst.4`) that has no head symbol, so `monoPattern` returns `none` and the application around it, here `IntCast.intCast`, is never monomorphized.",
+    "implementation": "`unfoldInstDefn` now leaves projection functions folded (`!(← isProjectionFn name)`), so the instance argument stays an application with a constant head that `monoPattern` can abstract.",
+    "probability": 0.55,
+    "notes": "Accepted."
+  },
+  {
+    "issue": "The goal is destructed with a larger set of structures than the premises and constructor typing use: `destructCanonical` adds the goal's own structures, but `toCanonical` never gets them. Here the goal is unpacked over `Std.DHashMap.Raw` while the premise `foldRev_eq_foldr_toListModel` keeps `l : Raw α β`, and `Raw.mk` is declared with no type (`*`).",
+    "implementation": "The goal's non-class structures (from `goal.getRelevantConstants` via `Destruct.getStruct`) are now collected once in `getPremises`, next to the premise structures. So `preprocess`/`destructCanonical` and `toCanonical` get the same `structs`, and the test harness now calls `getPremises` instead of keeping its own copy of that code.",
+    "probability": 0.55,
+    "notes": "Accepted."
+  },
+  {
+    "issue": "Constructor injectivity (`C.injEq`) rules were only added when the constructor's inductive type was fully expanded, and that expansion is skipped for structures that destruct does not unpack (like `String.Pos` and `String.Pos.Raw`). These constructors still show up in the problem through unfolding and projection rules, so `Eq` on them could not be decomposed.",
+    "implementation": "The injectivity rule is now added in `onDefineConst` whenever a constructor is first defined, so it attaches to the constructor itself rather than to the destruct-gated expansion of its inductive. This change exposed a latent bug in `reduceCtorEqRules`, which put the bare type head on its type pattern (`Eq List …`) instead of the type applied to wildcards for its params and indices. That is fixed too.",
+    "probability": 0.55,
+    "notes": "Partly accepted: only the fix to the type pattern in reduceCtorEqRules (wildcards for params and indices). Moving the injectivity rules into onDefineConst was rejected: the changes to Translate.lean were made small at the cost of being convoluted. A more principled approach may work, but it needs a clear justification for why rules should always be made that way."
+  },
+  {
+    "issue": "`destructCanonical` skips classes only when it finds them among the goal's relevant constants; a class named by the user, such as `Std.IsPartialOrder.mk`, is still unpacked into its fields, and a parent-class field like `toIsPreorder : IsPreorder α` becomes an explicit goal that Canonical cannot fill.",
+    "implementation": "In `destructCanonical` (Canonical/Destruct/Basic.lean), the separate class filter on `consts` is removed and `!isClass` is applied to the whole `names ++ consts` list passed to `Context.populate`, so a class is never unpacked, whatever its source.",
+    "probability": 0.55,
+    "notes": "Accepted."
+  },
+  {
     "issue": "`destructCanonical` puts the whole goal type, including its own leading binders, under the `dneg` wrapper as `((∀ {m} [Monad m] ..., P) → Destruct) → Destruct`, so the goal's instance binders never enter the local context and monomorphization can't use them.",
     "implementation": "`destructCanonical` now introduces the goal's leading parameters with `forallTelescope` before applying `dneg`. `destructTactic` then handles them through its existing revert logic: it keeps the instance binders (and the variables they depend on) in context and reverts and re-introduces the rest. `reconstruct` closes the proof over `params` with `mkLambdaFVars`, and `forward` applies the witness to `params`.",
     "probability": 0.5,
     "notes": "Rejected: the goal's instance binders would be a problem even without Destruct, so Destruct is not the right place for this fix."
+  },
+  {
+    "issue": "When simp lemmas are monomorphized, every combination of candidate instances is tried, and each combination is kept as a reduction rule even when its left-hand side head is a new monomorphization that nothing in the problem uses; the result grows out of control.",
+    "implementation": "In `registerSimpPremise`, a lemma reached only through simp (`simpOnly`) now becomes a reduction rule only if its left-hand side head is already defined in the snapshot taken before the attempt; otherwise the existing rollback discards it.",
+    "probability": 0.45,
+    "notes": "Accepted."
+  },
+  {
+    "issue": "`toRule`'s `iota := false` setting leaks into type normalization and into the definitions of newly reached constants. As a result, lambdas whose Π-type needs iota reduction reach `toSpine` and crash `toHead`.",
+    "implementation": "Only the top-level `whnf` of each rule side runs with `iota := false`, through a local `whnfSide` helper; `toSpine` and everything it reaches now run under the normal config.",
+    "probability": 0.45,
+    "notes": "Rejected: the changes to Translate.lean were made small at the cost of being convoluted. A more principled approach may work, but it needs a clear justification for why rules should always be made that way."
+  },
+  {
+    "issue": "`toRule` runs `whnf` on the lhs of a constant's own equation lemmas, so for reducible or `@[inline]` constants (`id`, `Not`, `Ne`, `Function.comp`, ...) the head gets unfolded away. The result is a degenerate rule like `a ↦ a`, which is rejected as non-terminating, and the constant is left as an opaque premise symbol with no reduction rule.",
+    "implementation": "In `toRule`, the lhs is passed through `whnf` only for candidate simp lemmas (`returnInvalid = false`). Definitional equations (eqns, matcher and injEq rules) keep their head, so `id` gets the redex rule `id α a ↦ a`.",
+    "probability": 0.45,
+    "notes": "Rejected: the changes to Translate.lean were made small at the cost of being convoluted. A more principled approach may work, but it needs a clear justification for why rules should always be made that way."
   },
   {
     "issue": "monoTransformStep assumes that when isDefEq succeeds it has assigned every pattern parameter. Lean's isDefEq skips Prop-typed arguments, so proof parameters taken from a locally built Prop instance stay unassigned and leak into the problem as undeclared global symbols.",

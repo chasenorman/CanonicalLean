@@ -1,20 +1,64 @@
 #!/usr/bin/env python3
-"""Usage: encoding-pilot-report.py <workflow output file> <name>
+"""Usage: encoding-pilot-report.py <run id>
 
-Writes each graded candidate of an encoding-pilot run as a patch (with its explanation as a header, which
-`git apply` ignores), and a SUMMARY.md, to .claude/workflows/candidates/<name>/."""
+Reads the journal of an encoding-pilot run, which the workflow runner writes as each agent finishes, so this can
+be run during the run as well as after it. Writes each graded candidate as a patch (with its explanation as a
+header, which `git apply` ignores), and a SUMMARY.md, to .claude/workflows/candidates/<run id>/."""
+import glob
 import json
 import os
+import re
 import sys
 
-output = json.load(open(sys.argv[1]))
-result = output.get('result', output)
-if isinstance(result, str):
-    result = json.loads(result)
-directory = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'candidates', sys.argv[2])
+run = sys.argv[1]
+journals = glob.glob(os.path.expanduser(f'~/.claude/projects/*/*/subagents/workflows/{run}/journal.jsonl'))
+if not journals:
+    sys.exit(f'No journal found for {run}.')
+transcripts = os.path.dirname(journals[0])
+directory = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'candidates', run)
 os.makedirs(directory, exist_ok=True)
+for old in glob.glob(os.path.join(directory, '*.patch')):
+    os.remove(old)
 
-candidates = result['candidates']
+# Each agent's label starts with the index of its failure (in older runs, after `work`, `grade` or `escalation`).
+# Its phase tells a worker from an overseer, and an overseer's result tells a grade from an escalation decision.
+def index(label):
+    return next(int(token) for token in label.split() if token.isdigit())
+
+
+phases, results = {}, {}
+for entry in map(json.loads, open(journals[0])):
+    if entry['type'] == 'started':
+        phases[entry['agentId']] = (entry['phase'], index(entry['label']))
+    elif entry['type'] == 'result' and entry['agentId'] in phases:
+        phase, i = phases[entry['agentId']]
+        kind = 'work' if phase == 'Work' else 'grade' if 'probability' in (entry['result'] or {}) else 'escalation'
+        results.setdefault(i, {})[kind] = entry['result']
+started = {i for phase, i in phases.values()}
+work_ids = {i: agent for agent, (phase, i) in phases.items() if phase == 'Work'}
+
+
+def strings(value):
+    """Every string inside a decoded JSON value."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, (list, dict)):
+        for child in (value.values() if isinstance(value, dict) else value):
+            yield from strings(child)
+
+
+def failure(i):
+    """The `lake exe debug` line given to worker `i`, from its prompt."""
+    with open(os.path.join(transcripts, f'agent-{work_ids[i]}.jsonl')) as f:
+        for text in strings([json.loads(line) for line in f]):
+            if match := re.search(r'standard library:\s*(lake exe debug .*)', text):
+                return match.group(1)
+    return '?'
+
+
+candidates = sorted(
+    [{'line': failure(i), **r['work'], **r['grade']} for i, r in results.items() if r.get('grade')],
+    key=lambda c: -c['probability'])
 patches = [f"{k:02d}-{c['probability']:.2f}.patch" for k, c in enumerate(candidates, 1)]
 for c, patch in zip(candidates, patches):
     header = '\n'.join(f'# {line}' for line in (c.get('explanation') or '').splitlines())
@@ -39,11 +83,11 @@ for k in range(len(candidates)):
     if (o := original(k)) != k:
         duplicates.setdefault(o, []).append(k)
 
-summary = [f'# {sys.argv[2]}', '']
+finished = [i for i, r in results.items() if 'work' in r]
+summary = [f'# {run}', '', f'{len(finished)} of {len(started)} started workers finished; {len(candidates)} candidates graded.', '']
 for k, (c, patch) in enumerate(zip(candidates, patches)):
     if original(k) != k:
         continue
-    evaluation = c.get('evaluation') or {}
     summary += [
         f"## {c['probability']:.2f} — {patch}",
         '',
@@ -52,7 +96,7 @@ for k, (c, patch) in enumerate(zip(candidates, patches)):
         f"- **Issue:** {c.get('issue')}",
         f"- **Implementation:** {c.get('implementation')}",
         f"- **Overseer:** {c.get('reason')}",
-        f"- **Evaluation:** {(evaluation.get('output') or 'not evaluated').strip().splitlines()[0]}",
+        f"- **Evaluation:** {(c.get('evaluation') or 'not evaluated').strip().splitlines()[0]}",
     ]
     if c.get('sameAs'):
         summary.append(f"- **Same as:** {c['sameAs']}")
@@ -60,18 +104,22 @@ for k, (c, patch) in enumerate(zip(candidates, patches)):
         summary.append(f"- **Also found by** {patches[j]} (`{candidates[j]['line']}`): {candidates[j].get('implementation')}")
     summary.append('')
 
-if result.get('declined'):
+declined = [i for i in sorted(finished) if results[i]['work'].get('outcome') == 'declined']
+if declined:
     summary += ['## Declined', '']
-    for d in result['declined']:
-        summary.append(f"- `{d['line']}`")
-        summary += [f"  - {i['description']}" for i in d['issues'] if i['generalizable']]
+    for i in declined:
+        summary.append(f"- `{failure(i)}`")
+        summary += [f"  - {issue['description']}" for issue in results[i]['work']['issues'] if issue['generalizable']]
     summary.append('')
-if result.get('notes'):
+escalated = [i for i in sorted(finished) if results[i]['work'].get('outcome') == 'escalation']
+paused = [i for i, r in results.items() if (r.get('grade') or {}).get('exitCode') == 1]
+if escalated or paused:
     summary += ['## Notes', '']
-    summary += [f"- `{n['line']}`: {n.get('note') or n.get('escalation')}" for n in result['notes']]
+    for i in escalated:
+        decision = results[i].get('escalation') or {}
+        summary.append(f"- `{failure(i)}` ({decision.get('action', 'undecided')}): {decision.get('note') or results[i]['work'].get('escalation')}")
+    summary += [f"- `{failure(i)}`: the harness package was not clean; the run was paused." for i in paused]
     summary.append('')
-if result.get('notDispatched'):
-    summary += ['## Not dispatched', ''] + [f"- `{line}`" for line in result['notDispatched']] + ['']
 
 with open(os.path.join(directory, 'SUMMARY.md'), 'w') as f:
     f.write('\n'.join(summary))

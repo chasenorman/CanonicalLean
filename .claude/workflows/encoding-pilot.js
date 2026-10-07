@@ -13,17 +13,19 @@ export const meta = {
 //   failures: string[]    // `lake exe debug ...` lines (already shuffled)
 //   graded?: { issue: string, implementation: string, probability: number, notes?: string }[]  // with review notes
 //   topK?: number         // how many graded candidates the overseer sees (default 20)
-//   concurrency?: number  // workers running at once (default 8)
+//   concurrency?: number  // workers running at once (default 10)
 // }
+// The candidates so far can be written out, during or after the run, with `encoding-pilot-report.py <run id>`.
 const BASE = args.base
 const FAILURES = args.failures
 const TOP_K = args.topK ?? 20
-const CONCURRENCY = args.concurrency ?? 8
+const CONCURRENCY = args.concurrency ?? 10
 const graded = [...(args.graded ?? [])]
 
 const MAIN = '/Users/chasenorman/CanonicalLean'
 const EVALUATE = `${MAIN}/.claude/workflows/encoding-pilot-evaluate.sh`
 const WORKER = `${MAIN}/.claude/workflows/encoding-pilot-worker.sh`
+const GRADED = `${MAIN}/.claude/workflows/encoding-pilot-graded.json`
 
 const CANONICAL = `
 Canonical is a type inhabitation solver for dependent type theory modulo reduction rules. CanonicalLean is a
@@ -103,7 +105,11 @@ const notDispatched = []
 const topGraded = () => [...graded].sort((a, b) => b.probability - a.probability).slice(0, TOP_K)
   .map(g => `- (${g.probability.toFixed(2)}) ${g.issue} ${g.implementation}${g.notes ? `\n  Author's notes: ${g.notes}` : ''}`).join('\n')
 
+// The theorem a `lake exe debug` line is about, without its shell quoting.
+const theorem = line => line.split(' ')[3].replace(/^'|'$/g, '').replace(/'\\''/g, "'")
+
 async function processFailure(line, i) {
+  const name = theorem(line)
   const work = await agent(`
 ${CANONICAL}
 You are in a fresh git worktree of CanonicalLean. First run \`bash ${WORKER} ${BASE}\`, which sets it up.
@@ -116,6 +122,9 @@ Running it prints the goal, the Canonical problem (the +debug encoding), a witne
 translated into the problem, not yet type-checked), the head symbols the witness uses that the problem does not
 declare, and whether Canonical found a proof. Keep any scratch files inside your worktree.
 
+Fixes proposed in earlier runs, with the author's decisions, are in ${GRADED}. Do not propose one again unless
+you address the author's notes on it.
+
 1. Identify the encoding issues that lead to this failure.
 2. Keep only the issues linked to a generalizable oversight.
 3. Attempt to implement a fix for at most one of them.
@@ -125,8 +134,9 @@ declining is a good outcome. Feel free to deviate significantly from your initia
 better perspectives arise. A fix need not solve this goal, but it must be a justifiable improvement.
 
 If the harness you are working in is not working as intended, or an unforeseen issue arises, stop and return an
-escalation instead.`, { label: `work ${i}`, phase: 'Work', schema: WORK, isolation: 'worktree' })
+escalation instead.`, { label: `${i} ${name}`, phase: 'Work', schema: WORK, isolation: 'worktree' })
   if (!work) return null
+  log(work.outcome === 'fix' ? `${name}: ${work.issue} ${work.implementation}` : `${name}: ${work.outcome}`)
   if (work.outcome === 'escalation') {
     const decision = await agent(`
 ${CANONICAL}
@@ -136,9 +146,10 @@ propose fixes for human review. A worker on \`${line}\` escalated:
 ${work.escalation}
 
 Decide whether to ignore this, note it for the author, or pause the run (no new workers are started; those
-running finish).`, { label: `escalation ${i}`, phase: 'Oversee', schema: DECISION })
+running finish).`, { label: `${i} ${name}`, phase: 'Oversee', schema: DECISION })
     if (decision?.action === 'note' || decision?.action === 'pause') notes.push({ line, escalation: work.escalation, note: decision.note })
     if (decision?.action === 'pause') paused = true
+    log(`${name}: escalation, ${decision?.action ?? 'undecided'}`)
     return { line, work, decision }
   }
   if (work.outcome !== 'fix' || !work.diff?.trim()) return { line, work }
@@ -165,7 +176,8 @@ ${topGraded() || '(none yet)'}
 
 Judge, from what is shown here, how likely the author is to adopt this as a correct encoding improvement, given
 the stringent requirements on code simplicity. If a listed candidate makes the same change, give its issue.`,
-    { label: `grade ${i}`, phase: 'Oversee', schema: GRADE })
+    { label: `${i} ${name}`, phase: 'Oversee', schema: GRADE })
+  if (grade) log(`${name}: ${grade.probability.toFixed(2)}${grade.sameAs ? ' (duplicate)' : ''}. ${grade.reason}`)
   if (grade?.exitCode === 1) {
     paused = true
     notes.push({ line, note: `The harness package was not clean at ${BASE}; the run was paused.\n${grade.evaluation}` })

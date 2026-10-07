@@ -67,7 +67,7 @@ def reduceCtorEqRules (ind : Name) (info : InductiveVal) : MetaM (Array Rule) :=
         let args1 := Array.replicate (info1.numFields + info1.numParams) wildcard
         let args2 := Array.replicate (info2.numFields + info2.numParams) wildcard
         rules := rules.push ⟨{ head := "Eq", args := #[
-          { spine := { head := ind.toString } },
+          { spine := { head := ind.toString, args := Array.replicate (info.numParams + info.numIndices) wildcard } },
           { spine := { head := ctor1.toString, args := args1 } },
           { spine := { head := ctor2.toString, args := args2 } }
         ] }, { head := "False" }, #["reduceCtorEq"], true⟩

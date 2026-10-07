@@ -124,10 +124,12 @@ mutual
   /-- Add the reduction rules for a constant symbol.  -/
   partial def onDefineConst (name : Name) : ToCanonicalM Unit := withIncRecDepth do
     let _ ← addConstant name
+    let (state, monoState) := (← get, ← getThe MonoState)
     let rules ← constRules name
     let success ← addConstraints rules
     if !success then
       logWarning s!"Rules {rules} for {name} are non-terminating."
+      set state; set monoState
     else addEquations name.toString rules
 
   /-- Determine the rules for constant `name` -/

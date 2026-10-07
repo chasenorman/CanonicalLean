@@ -47,7 +47,8 @@ def getPremises (goal : MVarId) (consts : Array Name) (config : Config) : MetaM 
   if config.destruct then
     let env ← getEnv
     structs ← premises.filterMapM Destruct.getStruct
-    structs := structs ++ (premises.filter (isStructure env))
+    let goalStructs ← (← goal.getRelevantConstants).toArray.filterMapM Destruct.getStruct
+    structs := structs ++ (premises.filter (isStructure env)) ++ goalStructs.filter (!isClass env ·)
     premises ← premises.filterM fun name => do pure (← Destruct.getStruct name).isNone
 
   if config.pi then
@@ -59,9 +60,12 @@ def getPremises (goal : MVarId) (consts : Array Name) (config : Config) : MetaM 
     and `forward` from a proof of `goal` to a proof of it. -/
 def preprocess (goal : MVarId) (config : Config) (structs : Array Name) :
     MetaM (MVarId × (Lean.Expr → MetaM Lean.Expr) × (Lean.Expr → MetaM Lean.Expr)) := do
-  if config.destruct then
-    return ← Destruct.destructCanonical goal structs
-  return (goal, pure, pure)
+  let (fvars, goal) ← goal.introNP (getIntrosSize (← goal.getType))
+  let fvars := fvars.map .fvar
+  let (goal', reconstruct, forward) ← if config.destruct
+    then Destruct.destructCanonical goal structs else pure (goal, pure, pure)
+  return (goal', fun x => do let proof ← reconstruct x; goal.withContext (mkLambdaFVars fvars proof),
+    fun x => forward (mkAppN x fvars))
 
 /-- Run Canonical asynchronously, so that we can check for cancellation. -/
 def runCanonical (decl : Decl) (timeout : UInt64) (config : Config) : MetaM CanonicalResult := do

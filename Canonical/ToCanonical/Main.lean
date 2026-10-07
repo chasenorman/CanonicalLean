@@ -15,11 +15,11 @@ public section
 
 /-- Attempt to include a premise of type `type` as a reduction rule, instead of a definiton.
     Returns `true` if successful. Otherwise, the symbols defined by the attempt are discarded. -/
-def registerSimpPremise (attribution : String) (type : Lean.Expr) : ToCanonicalM Bool := do
+def registerSimpPremise (attribution : String) (type : Lean.Expr) (simpOnly : Bool) : ToCanonicalM Bool := do
   if (← read).config.simp then
     let (state, monoState) := (← get, ← getThe MonoState)
     if let some rule ← toRule #[attribution] type false then
-      if ← addConstraints #[rule] then
+      if (!simpOnly || state.definitions.contains rule.lhs.head) && (← addConstraints #[rule]) then
         addEquations rule.lhs.head #[rule]
         return true
     set state; set monoState
@@ -32,7 +32,7 @@ def definePremise (const : Name) (simpOnly : Bool := false) :
   let (modified1, monomorphized) ← monomorphizePremise const
   let mut destructedPremises := #[]
   for (expr, type, name) in monomorphized do
-    if !(← registerSimpPremise const.toString type) && !simpOnly then
+    if !(← registerSimpPremise const.toString type simpOnly) && !simpOnly then
       let (bij?, destructed) ← destructPremise const expr type name simpOnly
       if let some (pack, metas) := bij? then
         destructedPremises := destructedPremises.push (expr, pack, metas)
