@@ -162,7 +162,7 @@ partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
     -- Check that `e` is eta expanded.
     if metas.size != args.size then return none
     for i in [0:binders.size] do
-      if binders[i]!.isInstImplicit then
+      if binders[i]!.isInstImplicit && (← isClass? (← inferType metas[i]!)).isSome then
         let some childPattern ← monoPattern (← unfoldInstDefn args[i]!) | return none
         addAsCandidate childPattern
         -- Assign `metas[i]` to the child pattern. Use `isDefEq` to create a valid term.

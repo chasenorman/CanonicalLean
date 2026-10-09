@@ -11,7 +11,9 @@ namespace Canonical
 public section
 
 def UNFOLD_HARD_CODE : NameSet := .ofList [
-  `Set.instMembership, `Set.Mem, `setOf, `instLENat
+  `instLENat, `Set.instMembership, `Set.Mem, `setOf, `Set.ofPred,
+  `Set.instUnion, `Set.union, `Set.instInter, `Set.inter, `Set.diff,
+  `Set.singleton, `Set.powerset, `Set.Subset, `Set.instLE
 ]
 
 /-- The arity of a function symbol and the arity of its parameters, recursively. -/

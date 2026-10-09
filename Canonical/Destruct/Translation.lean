@@ -93,6 +93,9 @@ noncomputable def translate_exists (α : Sort u) (p : α → Prop) : Translation
     fun e' => Exists.intro e'.val e'.property
   ⟩
 
+noncomputable def translate_nonempty (α : Sort u) : Translation (Nonempty α) α :=
+  ⟨fun e => Classical.choice e, fun e' => Nonempty.intro e'⟩
+
 structure Unit' where
 
 def translate_true : Translation True Unit' :=

@@ -19,9 +19,9 @@ structure Context where
   translations : Array MetaTranslation
 
 /-- Default structures that `destruct` will unpack. -/
-def STRUCTURES : Array Name := #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array, ``Unit']
+def STRUCTURES : Array Name := #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array, ``Unit', ``Inhabited]
 /-- Default translations that `destruct` will apply. -/
-def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit]
+def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_nonempty, ``translate_true, ``translate_unit, ``translate_punit]
 
 def Context.populate (names : Array Name) : MetaM Context := do
   let names := TRANSLATIONS ++ names
