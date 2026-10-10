@@ -11,15 +11,32 @@ export const meta = {
 // args: {
 //   base: string          // commit printed by encoding-pilot-setup.sh
 //   failures: string[]    // `lake exe debug ...` lines (already shuffled)
+//   deferred?: { constants: string[], reason: string }[]  // deferrals from earlier runs (encoding-pilot-deferred.jsonl)
 //   graded?: { issue: string, implementation: string, probability: number, notes?: string }[]  // with review notes
 //   topK?: number         // how many graded candidates the overseer sees (default 20)
 //   concurrency?: number  // workers running at once (default 10)
+//   agentLimit?: number   // agents the run may start (default 990, under the workflow limit of 1000)
 // }
 // The candidates so far can be written out, during or after the run, with `encoding-pilot-report.py <run id>`.
 const BASE = args.base
 const FAILURES = args.failures
+/** Oversights that workers have deferred, from earlier runs and this one; each worker checks its goal against them. */
+const deferrals = [...(args.deferred ?? [])]
 const TOP_K = args.topK ?? 20
 const CONCURRENCY = args.concurrency ?? 10
+const AGENT_LIMIT = args.agentLimit ?? 990
+// No new failure is started once this few agents remain, to leave room for those running to be graded.
+const RESERVE = 2 * CONCURRENCY
+
+/** Agents started so far. */
+let agents = 0
+
+/** `agent`, counted against `AGENT_LIMIT`; `null` if the limit is reached. */
+async function counted(prompt, opts) {
+  if (agents >= AGENT_LIMIT) return null
+  agents++
+  return agent(prompt, opts)
+}
 const graded = [...(args.graded ?? [])]
 
 const MAIN = '/Users/chasenorman/CanonicalLean'
@@ -54,7 +71,7 @@ Fixes are graded on:
 const WORK = {
   type: 'object',
   properties: {
-    outcome: { type: 'string', enum: ['fix', 'declined', 'escalation'] },
+    outcome: { type: 'string', enum: ['fix', 'declined', 'deferred', 'escalation'] },
     issues: {
       type: 'array',
       description: 'every encoding issue you identified, whether or not you implemented a fix for it',
@@ -73,6 +90,16 @@ const WORK = {
     implementation: { type: 'string', description: 'outcome fix: one sentence stating how the change addresses it' },
     explanation: { type: 'string', description: 'outcome fix: the oversight the change addresses, and why it is a justifiable improvement' },
     escalation: { type: 'string', description: 'outcome escalation: what is wrong, and what you observed' },
+    deferredBy: { type: 'string', description: 'outcome deferred: the reason of the deferral that covers this goal' },
+    defer: {
+      type: 'object',
+      description: 'only if confident: an oversight that later workers should recognize and set aside',
+      properties: {
+        constants: { type: 'array', items: { type: 'string' }, description: 'constants that the goals it affects mention' },
+        reason: { type: 'string', description: 'the oversight that makes such goals fail' },
+      },
+      required: ['constants', 'reason'],
+    },
   },
   required: ['outcome', 'issues'],
 }
@@ -110,7 +137,7 @@ const theorem = line => line.split(' ')[3].replace(/^'|'$/g, '').replace(/'\\''/
 
 async function processFailure(line, i) {
   const name = theorem(line)
-  const work = await agent(`
+  const work = await counted(`
 ${CANONICAL}
 You are in a fresh git worktree of CanonicalLean. First run \`bash ${WORKER} ${BASE}\`, which sets it up.
 
@@ -125,6 +152,11 @@ declare, and whether Canonical found a proof. Keep any scratch files inside your
 Fixes proposed in earlier runs, with the author's decisions, are in ${GRADED}. Do not propose one again unless
 you address the author's notes on it.
 
+These oversights have been deferred, until they are fixed:
+${deferrals.map(d => `- ${d.reason} (goals mentioning ${d.constants.join(', ')})`).join('\n') || '(none)'}
+If this goal fails because of one of them, return the outcome \`deferred\` straight away, giving its reason in
+\`deferredBy\`.
+
 1. Identify the encoding issues that lead to this failure.
 2. Keep only the issues linked to a generalizable oversight.
 3. Attempt to implement a fix for at most one of them.
@@ -133,12 +165,20 @@ Decline to implement a fix that does not meet these criteria; this will happen w
 declining is a good outcome. Feel free to deviate significantly from your initial conception of the issue as
 better perspectives arise. A fix need not solve this goal, but it must be a justifiable improvement.
 
+If an oversight you identified will make Canonical fail on other goals, whether or not you fixed it, you may defer
+it: give in \`defer\` the reason, and the constants that the goals it affects mention. Later workers will set those
+goals aside. Only do so if you are confident.
+
 If the harness you are working in is not working as intended, or an unforeseen issue arises, stop and return an
 escalation instead.`, { label: `${i} ${name}`, phase: 'Work', schema: WORK, isolation: 'worktree' })
   if (!work) return null
   log(work.outcome === 'fix' ? `${name}: ${work.issue} ${work.implementation}` : `${name}: ${work.outcome}`)
+  if (work.defer?.constants?.length) {
+    deferrals.push(work.defer)
+    log(`${name}: deferring goals that mention ${work.defer.constants.join(', ')}: ${work.defer.reason}`)
+  }
   if (work.outcome === 'escalation') {
-    const decision = await agent(`
+    const decision = await counted(`
 ${CANONICAL}
 You oversee a run in which workers look for generalizable encoding oversights behind failures of Canonical, and
 propose fixes for human review. A worker on \`${line}\` escalated:
@@ -154,7 +194,7 @@ running finish).`, { label: `${i} ${name}`, phase: 'Oversee', schema: DECISION }
   }
   if (work.outcome !== 'fix' || !work.diff?.trim()) return { line, work }
 
-  const grade = await agent(`
+  const grade = await counted(`
 ${CANONICAL}
 ${CRITERIA}
 A worker proposed this change after studying the failure \`${line}\`.
@@ -191,7 +231,7 @@ the stringent requirements on code simplicity. If a listed candidate makes the s
 const results = []
 let next = 0
 await parallel(Array.from({ length: CONCURRENCY }, () => async () => {
-  while (next < FAILURES.length && !paused) {
+  while (next < FAILURES.length && !paused && agents < AGENT_LIMIT - RESERVE) {
     const i = next++
     results[i] = await processFailure(FAILURES[i], i)
   }
@@ -201,14 +241,15 @@ notDispatched.push(...FAILURES.slice(next))
 const done = results.filter(Boolean)
 const candidates = done.filter(r => r.grade).sort((a, b) => b.grade.probability - a.grade.probability)
 log(`${candidates.length} graded candidates, ${done.filter(r => r.work.outcome === 'declined').length} declined, ${notes.length} notes`)
-if (notDispatched.length) log(`Paused: ${notDispatched.length} failures were not dispatched`)
+if (notDispatched.length) log(`${paused ? 'Paused' : 'Agent limit reached'}: ${notDispatched.length} failures were not dispatched`)
+// Everything else is in the journal; `encoding-pilot-report.py` writes it out.
 return {
-  candidates: candidates.map(r => ({
-    line: r.line, probability: r.grade.probability, reason: r.grade.reason, sameAs: r.grade.sameAs,
-    issue: r.work.issue, implementation: r.work.implementation, explanation: r.work.explanation,
-    diff: r.work.diff, evaluation: { exitCode: r.grade.exitCode, output: r.grade.evaluation }, issues: r.work.issues,
-  })),
-  declined: done.filter(r => r.work.outcome === 'declined').map(r => ({ line: r.line, issues: r.work.issues })),
+  candidates: candidates.length,
+  declined: done.filter(r => r.work.outcome === 'declined').length,
+  deferred: done.filter(r => r.work.outcome === 'deferred').length,
+  escalations: done.filter(r => r.work.outcome === 'escalation').length,
   notes,
-  notDispatched,
+  deferrals: deferrals.slice((args.deferred ?? []).length),
+  notDispatched: notDispatched.length,
+  agents,
 }

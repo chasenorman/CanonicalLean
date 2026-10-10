@@ -121,6 +121,28 @@ if escalated or paused:
     summary += [f"- `{failure(i)}`: the harness package was not clean; the run was paused." for i in paused]
     summary.append('')
 
+set_aside = [i for i in sorted(finished) if results[i]['work'].get('outcome') == 'deferred']
+if set_aside:
+    summary += ['## Set aside as deferred', '']
+    summary += [f"- `{failure(i)}`: {results[i]['work'].get('deferredBy')}" for i in set_aside]
+    summary.append('')
+
+# Deferrals, recorded for later runs (their `deferred` argument) in encoding-pilot-deferred.jsonl.
+deferring = [i for i in sorted(finished) if (results[i]['work'].get('defer') or {}).get('constants')]
+if deferring:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'encoding-pilot-deferred.jsonl')
+    known = [json.loads(line)['constants'] for line in open(path)] if os.path.exists(path) else []
+    summary += ['## Deferrals', '']
+    for i in deferring:
+        defer = results[i]['work']['defer']
+        summary.append(f"- `{failure(i)}`: goals mentioning {defer['constants']}. {defer['reason']}")
+        if sorted(defer['constants']) not in [sorted(k) for k in known]:
+            known.append(defer['constants'])
+            with open(path, 'a') as f:
+                f.write(json.dumps({'constants': defer['constants'], 'reason': defer['reason'], 'run': run},
+                                   ensure_ascii=False) + '\n')
+    summary.append('')
+
 with open(os.path.join(directory, 'SUMMARY.md'), 'w') as f:
     f.write('\n'.join(summary))
 print(directory)
