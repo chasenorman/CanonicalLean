@@ -37,7 +37,7 @@ elab (name := canonicalSeq) "canonical " timeout_syntax:(num)? config:optConfig 
   if config.debug then
     Elab.admitGoal goal
     save_problem decl "debug.json"
-    dbg_trace decl.type
+    dbg_trace decl.type.get!
     return
 
   -- Refinement UI

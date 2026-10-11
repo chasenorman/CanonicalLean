@@ -18,22 +18,24 @@ def wildcard : Canonical.Expr := { spine := { head := "*" } }
 /-- Creates an η-**short** `Expr` applying `d` at the head. -/
 def Decl.toExpr (d : Decl) : Canonical.Expr := { spine := { head := d.name } }
 
-partial def containsLambda (t : Canonical.Expr) : Bool :=
-  !t.params.isEmpty || t.spine.args.any containsLambda
-
 /-- Counts the occurrences of `v` as a head symbol in `t`. -/
 partial def count (t : Spine) (v : String) : Nat :=
   t.args.foldl (init := if t.head == v then 1 else 0) (· + count ·.spine v)
 
+/-- Whether `t` is the η-expansion of the variable `v`. -/
+partial def isEta (v : String) (t : Canonical.Expr) : Bool :=
+  t.spine.head == v && t.params.size == t.spine.args.size &&
+    (t.params.zip t.spine.args).all fun (p, a) => isEta p.name a
+
+/-- Whether the argument `t` can be matched, binding the variables `vars`:
+    it is a variable, or a λ-free application of a symbol to such arguments. -/
+partial def patternArg (vars : Array String) (t : Canonical.Expr) : Bool :=
+  vars.any (isEta · t) || (t.params.isEmpty && !vars.contains t.spine.head && t.spine.args.all (patternArg vars))
+
 /-- Filtering for candidate simp lemmas based on the `lhs`. -/
 def validSimpLemma (xs : Array Lean.Expr) (lhs : Spine) : MetaM Bool := do
-  if ← xs.anyM (fun x => do pure ((← typeArity1 (← x.fvarId!.getType)) != 0)) then
-    pure false -- higher order
-  else if ← xs.anyM (fun x => do pure (count lhs (← toNameString x) != 1)) then
-    pure false -- unbound or overused variable
-  else if lhs.args.any containsLambda then
-    pure false -- potentially requires that the lambda does not use the fvars
-  else pure true
+  let vars ← xs.mapM toNameString
+  pure (vars.all (count lhs · == 1) && lhs.args.all (patternArg vars))
 
 /-- Rule corresponding to reduction of projections. -/
 def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (constructor : String) (constructorVal : ConstructorVal) (arity : Nat) : Rule :=
@@ -67,7 +69,7 @@ def reduceCtorEqRules (ind : Name) (info : InductiveVal) : MetaM (Array Rule) :=
         let args1 := Array.replicate (info1.numFields + info1.numParams) wildcard
         let args2 := Array.replicate (info2.numFields + info2.numParams) wildcard
         rules := rules.push ⟨{ head := "Eq", args := #[
-          { spine := { head := ind.toString } },
+          { spine := { head := ind.toString, args := Array.replicate (info.numParams + info.numIndices) wildcard } },
           { spine := { head := ctor1.toString, args := args1 } },
           { spine := { head := ctor2.toString, args := args2 } }
         ] }, { head := "False" }, #["reduceCtorEq"], true⟩

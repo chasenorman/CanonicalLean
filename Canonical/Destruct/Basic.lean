@@ -19,9 +19,9 @@ structure Context where
   translations : Array MetaTranslation
 
 /-- Default structures that `destruct` will unpack. -/
-def STRUCTURES : Array Name := #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array, ``Unit']
+def STRUCTURES : Array Name := #[``Prod, ``PProd, ``And, ``Sigma, ``PSigma, ``Iff, ``MProd, ``Subtype, ``Fin, ``Array, ``Unit', ``Inhabited]
 /-- Default translations that `destruct` will apply. -/
-def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_true, ``translate_unit, ``translate_punit]
+def TRANSLATIONS : Array Name := #[``translate_exists, ``translate_nonempty, ``translate_true, ``translate_unit, ``translate_punit]
 
 def Context.populate (names : Array Name) : MetaM Context := do
   let names := TRANSLATIONS ++ names
@@ -83,6 +83,7 @@ partial def destructPi (t : Expr) (binderName : Name) (inputName : Name) (inputT
   (outputType : Expr) (inputInfo : BinderInfo) : DestructM Bijection := do
   let input ← destructMain inputType inputName
   lambdaBoundedTelescope input.pack input.unpack.size fun vars packed => do
+  withNewBinderInfos (vars.map (·.fvarId!, inputInfo)) do
     let output ← destructMain (outputType.instantiate1 packed) binderName
 
     let unpack ← withLocalDecl binderName .default t fun f => do
@@ -153,14 +154,12 @@ partial def destructTactic (goal : MVarId) (context : Context) : MetaM (Array (A
 
 def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (Expr → MetaM Expr)) := do
   let env ← getEnv
-  let consts ← (← goal.getRelevantConstants).toArray.filterMapM getStruct
-  let consts ← consts.filterM fun name => do pure !isClass env name
   let goal ← goal.withContext do pure (← mkFreshExprMVar (← goal.getType)).mvarId!
   goal.withContext do
     let typ ← goal.getType
     let dneg := (env.find? ``Canonical.dneg).get!.value!
     let next := (← goal.apply (Canonical.apply dneg [typ]))[0]!
-    let context ← Context.populate (names ++ consts)
+    let context ← Context.populate (names.filter (!isClass env ·))
     let destruct ← destructTactic next context
     let result := destruct.1[0]!
     let ⟨_, _, assignment⟩ := ← abstractMVars

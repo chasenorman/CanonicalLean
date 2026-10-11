@@ -71,8 +71,8 @@ const selectStyle = {
 
 // Models offered per provider kind; the first is the default when switching kinds.
 const MODELS = {
-    Claude: [['Haiku', 'claude-haiku-4-5-20251001'], ['Sonnet', 'claude-sonnet-5'], ['Opus', 'claude-opus-5'], ['Fable', 'claude-fable-5-1']],
-    Codex: [['Luna', 'gpt-5.6-luna'], ['Terra', 'gpt-5.6-terra'], ['Sol', 'gpt-5.6-sol'], ['Astra', 'gpt-6-astra']],
+    Claude: [['Haiku', 'claude-haiku-5-5'], ['Sonnet', 'claude-sonnet-5-5'], ['Opus', 'claude-opus-5-5'], ['Fable', 'claude-fable-5-1']],
+    Codex: [['Luna', 'gpt-6-luna'], ['Terra', 'gpt-5.6-terra'], ['Sol', 'gpt-6.1-sol'], ['Astra', 'gpt-6-astra']],
 }
 // A choice with a valid model for its kind (saved choices may predate the lists).
 function normalize(choice) {

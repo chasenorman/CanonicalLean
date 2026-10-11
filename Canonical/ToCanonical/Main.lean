@@ -3,6 +3,7 @@ module
 public import Canonical.ToCanonical.Util
 import Canonical.ToCanonical.Translate
 import Canonical.ToCanonical.Reduction
+import Canonical.Destruct.Basic
 import Lean
 
 open Lean
@@ -13,24 +14,32 @@ namespace Canonical
 public section
 
 /-- Attempt to include a premise of type `type` as a reduction rule, instead of a definiton.
-    Returns `true` if successful. -/
-def registerSimpPremise (attribution : String) (type : Lean.Expr) : ToCanonicalM Bool := do
+    Returns `true` if successful. Otherwise, the symbols defined by the attempt are discarded. -/
+def registerSimpPremise (attribution : String) (type : Lean.Expr) (simpOnly : Bool) : ToCanonicalM Bool := do
   if (← read).config.simp then
+    let (state, monoState) := (← get, ← getThe MonoState)
     if let some rule ← toRule #[attribution] type false then
-      if ← addConstraints #[rule] then
+      if (!simpOnly || state.definitions.contains rule.lhs.head) && (← addConstraints #[rule]) then
         addEquations rule.lhs.head #[rule]
         return true
+    set state; set monoState
   return false
 
-/-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate. -/
-def definePremise (const : Name) (simpOnly : Bool := false) : ToCanonicalM Unit := do
+/-- Add premise `name`, monomorphizing and/or registering as a simp lemma if appropriate.
+    Returns each destructed premise expression, with its `pack` and component metavariables. -/
+def definePremise (const : Name) (simpOnly : Bool := false) :
+    ToCanonicalM (Array (Lean.Expr × Lean.Expr × Array Lean.Expr)) := do
   let (modified1, monomorphized) ← monomorphizePremise const
+  let mut destructedPremises := #[]
   for (expr, type, name) in monomorphized do
-    if !(← registerSimpPremise const.toString type) && !simpOnly then
-      let (modified2, destructed) ← destructPremise const expr type name simpOnly
+    if !(← registerSimpPremise const.toString type simpOnly) && !simpOnly then
+      let (bij?, destructed) ← destructPremise const expr type name simpOnly
+      if let some (pack, metas) := bij? then
+        destructedPremises := destructedPremises.push (expr, pack, metas)
       for (_expr, type, name) in destructed do
-        if !modified1 && !modified2 then let _ ← defineConst const
+        if !modified1 && bij?.isNone then let _ ← defineConst const
         else let _ ← define name.toString type
+  return destructedPremises
 
 def addSimpLemmas : ToCanonicalM Unit := do
   withReader (fun ctx => { ctx with polarity := .premise }) do
@@ -54,7 +63,7 @@ def toCanonical_ (name : String) (goal : Lean.Expr) (premises : Array Name) : To
 
   -- Constant Symbol Premises
   withReader (fun ctx => { ctx with polarity := .premise }) do
-    for premise in premises do
+    premises.forM fun premise => do
       let _ ← definePremise premise
 
   -- Simp Lemmas
@@ -75,6 +84,7 @@ def toCanonical (name : String) (goal : Lean.Expr) (premises : Array Name) (stru
     {
       arities := ← lctx.foldlM (fun arities decl => do
         pure (arities.insert decl.fvarId (← typeArity decl.type)))
-          (.emptyWithCapacity lctx.size), config, structures
+          (.emptyWithCapacity lctx.size), config
+      destruct := ← Destruct.Context.populate structures
     }).run' { }).run'
       { globalFVars := .ofArray lctx.getFVarIds, constNames := .ofList [``OfNat.ofNat] }

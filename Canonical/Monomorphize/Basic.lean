@@ -126,12 +126,13 @@ partial def addAsCandidate (inst : Expr) : MonoM Unit := do
 
 /-- Unfolds constants that are not global instances at the head of `e`.  -/
 partial def unfoldInstDefn (e : Expr) : MetaM Expr := do
-  let (name, args) := getAppFnArgs e
-  let env ← getEnv
-  if let some info := env.find? name then
-    if !(← isInstance name) then
-      if let some value := info.value? then
-        return ← unfoldInstDefn (← whnfR (mkAppN value args))
+  if let .const name us := e.getAppFn then
+    let env ← getEnv
+    if let some info := env.find? name then
+      if !(← isInstance name) && !(← isProjectionFn name) then
+        if let some value := info.value? then
+          return ← unfoldInstDefn (← whnfR
+            (mkAppN (value.instantiateLevelParams info.levelParams us) e.getAppArgs))
   return e
 
 /-- Apply `transform` to the type and local context of `goal`. -/
@@ -162,7 +163,7 @@ partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
     -- Check that `e` is eta expanded.
     if metas.size != args.size then return none
     for i in [0:binders.size] do
-      if binders[i]!.isInstImplicit then
+      if binders[i]!.isInstImplicit && (← isClass? (← inferType metas[i]!)).isSome then
         let some childPattern ← monoPattern (← unfoldInstDefn args[i]!) | return none
         addAsCandidate childPattern
         -- Assign `metas[i]` to the child pattern. Use `isDefEq` to create a valid term.
@@ -171,6 +172,14 @@ partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
           logWarning s!"Monomorphization failure: {e}"
           return none
     instantiateMVars (mkAppN fn metas)
+
+/-- `isDefEq` that also assigns metavariables within proof arguments of `pattern`,
+    which `isDefEq` skips by proof irrelevance. -/
+partial def isDefEqProofRelevant (pattern e : Expr) : MetaM Bool := withoutProofIrrelevance do
+  let fn := pattern.getAppFn
+  if fn.isConst && fn.constName? == e.getAppFn.constName? && pattern.getAppNumArgs == e.getAppNumArgs then
+    isDefEqGuarded fn e.getAppFn <&&> (pattern.getAppArgs.zip e.getAppArgs).allM fun (p, a) => isDefEqProofRelevant p a
+  else isDefEqGuarded pattern e
 
 /-- Monomorphizes the head of `e`, creating a new monomorphization metavariable if necessary. -/
 partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
@@ -185,7 +194,7 @@ partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
           let mvarlevels ← mkFreshLevelMVars specLevels.length
           let instantiated := specBody.instantiateLevelParams specLevels mvarlevels
           let ⟨metas, _, body⟩ ← lambdaMetaTelescope instantiated
-          if ← isDefEqGuarded e body then
+          if ← isDefEqProofRelevant body e then
             let newExpr ← pure (mkAppN (.mvar specmVar) (← metas.mapM instantiateMVars))
             return .continue newExpr
 
@@ -201,7 +210,7 @@ partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
 
             let _ ← addConstants monoPattern.getUsedConstantsAsSet
 
-            let success ← withoutProofIrrelevance do isDefEq monoPattern e
+            let success ← isDefEqProofRelevant monoPattern e
             if !success then
               logWarning s!"Failed to monomorphize {fn}"
               return .continue

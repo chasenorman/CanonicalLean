@@ -68,7 +68,7 @@ mutual
       | fvar id => do pure ((← read).arities[id]!)
       | const name _ => defineConst name
       | _ => define head.toString type
-      return ← addArgs { head := head.toString } type args.toList arity.params.toList synthInst
+      addArgs { head := head.toString } type args.toList arity.params.toList synthInst
 
   /-- Apply `args` to `spine` of type `type` with parameter arities `arities`. -/
   partial def addArgs (spine : Spine) (type : Lean.Expr) (args : List Lean.Expr) (arities : List Arity) (synthInst : Bool := true) : ToCanonicalM Spine := withIncRecDepth do
@@ -124,10 +124,12 @@ mutual
   /-- Add the reduction rules for a constant symbol.  -/
   partial def onDefineConst (name : Name) : ToCanonicalM Unit := withIncRecDepth do
     let _ ← addConstant name
+    let (state, monoState) := (← get, ← getThe MonoState)
     let rules ← constRules name
     let success ← addConstraints rules
     if !success then
       logWarning s!"Rules {rules} for {name} are non-terminating."
+      set state; set monoState
     else addEquations name.toString rules
 
   /-- Determine the rules for constant `name` -/
@@ -167,7 +169,7 @@ mutual
   partial def onTypeConst (name : Name) : ToCanonicalM Unit := withIncRecDepth do
     if let .inductInfo info ← getConstInfo name then
       let env ← getEnv
-      if !(← read).config.destruct || !isStructure env name || (← read).structures.contains name then
+      if !(← read).config.destruct || !isStructure env name || (← read).destruct.structures.contains name then
         for ctor in info.ctors do
           let _ ← defineConst ctor
 
@@ -208,11 +210,12 @@ mutual
             let id := x.fvarId!
             pure (id, ← typeArity (← id.getType)))
           withReader (fun ctx => { ctx with arities := ctx.arities.insertMany arities }) do
-            withConfig (fun cfg => { cfg with iota := false }) do
-              -- convert an equality of functions into an extensional equality of their applications
-              let lhs ← toSpine (← whnf (mkAppN lhs txs)) (synthInst := false)
-              if returnInvalid || (← validSimpLemma (xs ++ txs) lhs) then
-                return some ⟨lhs, ← toSpine (← whnf (mkAppN rhs txs)), attribution, true⟩
-              else return none
+            -- convert an equality of functions into an extensional equality of their applications
+            let (lhs, rhs) ← withConfig (fun cfg => { cfg with iota := false }) do
+              return (← whnf (mkAppN lhs txs), ← whnf (mkAppN rhs txs))
+            let lhs ← toSpine lhs (synthInst := false)
+            if returnInvalid || (← validSimpLemma (xs ++ txs) lhs) then
+              return some ⟨lhs, ← toSpine rhs, attribution, true⟩
+            else return none
 
 end
