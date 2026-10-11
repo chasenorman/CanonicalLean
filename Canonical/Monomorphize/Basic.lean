@@ -126,12 +126,13 @@ partial def addAsCandidate (inst : Expr) : MonoM Unit := do
 
 /-- Unfolds constants that are not global instances at the head of `e`.  -/
 partial def unfoldInstDefn (e : Expr) : MetaM Expr := do
-  let (name, args) := getAppFnArgs e
-  let env ← getEnv
-  if let some info := env.find? name then
-    if !(← isInstance name) && !(← isProjectionFn name) then
-      if let some value := info.value? then
-        return ← unfoldInstDefn (← whnfR (mkAppN value args))
+  if let .const name us := e.getAppFn then
+    let env ← getEnv
+    if let some info := env.find? name then
+      if !(← isInstance name) && !(← isProjectionFn name) then
+        if let some value := info.value? then
+          return ← unfoldInstDefn (← whnfR
+            (mkAppN (value.instantiateLevelParams info.levelParams us) e.getAppArgs))
   return e
 
 /-- Apply `transform` to the type and local context of `goal`. -/

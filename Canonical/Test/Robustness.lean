@@ -43,13 +43,26 @@ def debugCommand (const : Name) (failure : Failure) : String :=
   let args := #[toString const, toString failure.pos] ++ failure.premises.toArray.map toString
   args.foldl (fun acc x => s!"{acc} {shellQuote x}") "lake exe debug"
 
+/-- `traverseChildrenWithPos`, except that let binders enter the context with their `nondep` flag,
+    so a `have` is a hypothesis, as during elaboration. Core's `traverseLetWithPos` drops the flag. -/
+partial def traverseChildren (visit : Pos → Expr → TraverseM Unit) (p : Pos) (e : Expr) : TraverseM Unit :=
+  match e with
+  | .letE .. => visitLet p e
+  | _ => discard <| traverseChildrenWithPos (fun p c => do visit p c; pure c) p e
+where
+  visitLet (p : Pos) : Expr → TraverseM Unit
+    | .letE n t v b nondep => do
+      visit p.pushLetVarType t
+      visit p.pushLetValue v
+      withLetDecl n t v (nondep := nondep) fun x => visitLet p.pushLetBody (b.instantiate1 x)
+    | e => visit p e
+
 partial def traverse (const : Name) (e : Expr) (f : Pos → Expr → NameSet → MetaM (Except Failure NameSet)) (p : Pos := .root) : MetaM Accumulate := do
   if ← isProof e then
     let start := { premises := NameSet.ofArray e.constName?.toArray }
-    let (_, children) ← traverseChildrenWithPos (M := TraverseM) (fun p c => do
+    let (_, children) ← traverseChildren (fun p c => do
       let child ← traverse const c f p
       modify (· + child)
-      pure c
     ) p e start
 
     if !e.isLambda then

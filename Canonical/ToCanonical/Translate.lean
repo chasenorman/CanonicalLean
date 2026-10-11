@@ -68,7 +68,7 @@ mutual
       | fvar id => do pure ((← read).arities[id]!)
       | const name _ => defineConst name
       | _ => define head.toString type
-      return ← addArgs { head := head.toString } type args.toList arity.params.toList synthInst
+      addArgs { head := head.toString } type args.toList arity.params.toList synthInst
 
   /-- Apply `args` to `spine` of type `type` with parameter arities `arities`. -/
   partial def addArgs (spine : Spine) (type : Lean.Expr) (args : List Lean.Expr) (arities : List Arity) (synthInst : Bool := true) : ToCanonicalM Spine := withIncRecDepth do
@@ -210,11 +210,12 @@ mutual
             let id := x.fvarId!
             pure (id, ← typeArity (← id.getType)))
           withReader (fun ctx => { ctx with arities := ctx.arities.insertMany arities }) do
-            withConfig (fun cfg => { cfg with iota := false }) do
-              -- convert an equality of functions into an extensional equality of their applications
-              let lhs ← toSpine (← whnf (mkAppN lhs txs)) (synthInst := false)
-              if returnInvalid || (← validSimpLemma (xs ++ txs) lhs) then
-                return some ⟨lhs, ← toSpine (← whnf (mkAppN rhs txs)), attribution, true⟩
-              else return none
+            -- convert an equality of functions into an extensional equality of their applications
+            let (lhs, rhs) ← withConfig (fun cfg => { cfg with iota := false }) do
+              return (← whnf (mkAppN lhs txs), ← whnf (mkAppN rhs txs))
+            let lhs ← toSpine lhs (synthInst := false)
+            if returnInvalid || (← validSimpLemma (xs ++ txs) lhs) then
+              return some ⟨lhs, ← toSpine rhs, attribution, true⟩
+            else return none
 
 end

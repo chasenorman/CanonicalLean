@@ -167,7 +167,7 @@ def SIMP_HARD_CODE : HashMap Name (Array Name) := .ofList [
   (`Nat.one_mul, #[``Nat.succ_mul, ``Nat.mul_assoc]),
   (`Nat.one_pow, #[``Nat.pow_succ, ``Nat.pow_add, ``Nat.mul_pow]),
   (`Nat.pow_one, #[]),
-  (`Int.ofNat_eq_coe, #[])
+  (`Int.ofNat_eq_natCast, #[])
 ]
 
 /-- Retrieve the `Origin`s in `trie` consisting only of constants in `constSet`.  -/
