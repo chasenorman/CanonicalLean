@@ -94,8 +94,13 @@ private def unpack (archive root : FilePath) : IO Unit := do
   else
     let _ ← runCommand "tar" #["-xf", archive.toString, "-C", root.toString]
 
+private def libDir : IO FilePath := do
+  let dir := (← IO.currentDir) / ".lake" / "build" / "lib"
+  IO.FS.createDirAll dir
+  return dir
+
 private def ensureLlama : IO FilePath := do
-  let root := (← cacheDir) / "llama.cpp" / "release" / llamaCppTag
+  let root := (← libDir) / "llama.cpp" / llamaCppTag
   let exeName := if System.Platform.isWindows then "llama-server.exe" else "llama-server"
   if ← root.pathExists then
     if let some exe ← findFileNamed root exeName then return exe
@@ -109,11 +114,10 @@ private def ensureLlama : IO FilePath := do
     throw <| IO.userError s!"{fileName} did not contain {exeName}"
   return exe
 
-private def ensureModelFile (repo filename : String) : IO System.FilePath := do
-  let dest := (← cacheDir) / repo / filename
+private def ensureModelFile (repo : String) (dest : FilePath) : IO Unit := do
   unless ← dest.pathExists do
-    downloadWithProgress log s!"https://huggingface.co/{repo}/resolve/main/{filename}" dest (what := "model")
-  return dest
+    downloadWithProgress log s!"https://huggingface.co/{repo}/resolve/main/{dest.fileName.getD ""}" dest
+      (what := "model")
 
 private def isPortHealthy (port : Nat) : IO Bool := do
   return (← IO.Process.output { cmd := "curl", args := #["-sSf", "--max-time", "1",
@@ -197,19 +201,16 @@ private def ensureCache (db : FilePath) : IO Unit := do
   if !(← db.pathExists) then
     let _ ← downloadCache log db "lean.db"
 
-def premiseDb : IO FilePath := do
-  let libDir := (← IO.currentDir) / ".lake" / "build" / "lib" / "lean"
-  IO.FS.createDirAll libDir
-  return libDir / "premise.db"
+def premiseDb : IO FilePath := return (← libDir) / "premise.db"
 
-def premiseModel : IO FilePath :=
-  ensureModelFile log "chasenorman/lean-premise-distilroberta-GGUF" "thomas-zhu-lean-premise.f16.gguf"
+def premiseModel : IO FilePath := return (← libDir) / "thomas-zhu-lean-premise.f16.gguf"
 
 def startPremiseDaemon (prebuilt := true) : IO Unit := do
   let db ← premiseDb
+  let model ← premiseModel
   if prebuilt then ensureCache log db
+  ensureModelFile log "chasenorman/lean-premise-distilroberta-GGUF" model
   if ← isPortHealthy premisePort then return
-  let model ← premiseModel log
   let args := #["--premise", "-m", model.toString,
     "--host", daemonHost, "--port", toString premisePort, "--pooling", "mean",
     "--ctx-size", "512", "--index-db", db.toString]
@@ -219,8 +220,9 @@ def startPremiseDaemon (prebuilt := true) : IO Unit := do
 
 def startSubgoalDaemon : IO Unit := do
   if ← isPortHealthy daemonPort then return
-  let model ← ensureModelFile log "awhecmu/canonical-drafter-ei2m-drafter-GGUF"
+  let model := (← cacheDir) / "awhecmu" / "canonical-drafter-ei2m-drafter-GGUF" /
     "ei2m-drafter-Q5_K_M.gguf"
+  ensureModelFile log "awhecmu/canonical-drafter-ei2m-drafter-GGUF" model
   spawnDaemon log #["-m", model.toString, "--host", daemonHost,
     "--port", toString daemonPort,
     "--n-gpu-layers", "-1", "--mlock", "--ctx-size", "8192",

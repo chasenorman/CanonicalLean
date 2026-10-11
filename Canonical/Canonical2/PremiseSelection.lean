@@ -97,7 +97,7 @@ def toPremise (name : Name) : MetaM (Option Premise) := do
 def select (log : String → String → IO Unit) (goal : MVarId) (config : LibrarySuggestions.Config) :
     MetaM (Array Suggestion) := withOptions roundtrip do
   startPremiseDaemon log
-  setConfig (← premiseDb) (← premiseModel log)
+  setConfig (← premiseDb) (← premiseModel)
   let env ← getEnv
   let mods := env.allImportedModuleNames.filter (!isDeniedModule env ·)
   let cached ← getCachedModuleVersionTokens mods
