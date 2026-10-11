@@ -20,7 +20,7 @@ def daemonPort : Nat := 8765
 def premisePort : Nat := 8766
 
 private def llamaCppRepo : String := "FrederickPu/llama.cpp"
-private def llamaCppTag : String := "premise-v11"
+private def llamaCppTag : String := "premise-v12"
 def premiseCache : String := "chasenorman/mathlib-cache"
 
 private def runCommand (cmd : String) (args : Array String) : IO String := do
@@ -202,12 +202,14 @@ def premiseDb : IO FilePath := do
   IO.FS.createDirAll libDir
   return libDir / "premise.db"
 
+def premiseModel : IO FilePath :=
+  ensureModelFile log "chasenorman/lean-premise-distilroberta-GGUF" "thomas-zhu-lean-premise.f16.gguf"
+
 def startPremiseDaemon (prebuilt := true) : IO Unit := do
   let db ← premiseDb
   if prebuilt then ensureCache log db
   if ← isPortHealthy premisePort then return
-  let model ← ensureModelFile log "chasenorman/lean-premise-distilroberta-GGUF"
-    "thomas-zhu-lean-premise.f16.gguf"
+  let model ← premiseModel log
   let args := #["--premise", "-m", model.toString,
     "--host", daemonHost, "--port", toString premisePort, "--pooling", "mean",
     "--ctx-size", "512", "--index-db", db.toString]

@@ -48,8 +48,10 @@ private def curl (path : String) (data : Json) (method := "POST") : IO String :=
 private def request {α} [FromJson α] (path : String) (data : Json) : IO α := do
   IO.ofExcept (Json.parse (← curl path data) >>= fromJson?)
 
-private def setIndex (db : FilePath) : IO Unit := do
-  let _ ← curl "/index" (Json.mkObj [("path", toJson db.toString)]) (method := "PUT")
+private def setConfig (db model : FilePath) : IO Unit := do
+  let _ ← curl "/config" (Json.mkObj [
+    ("index", toJson db.toString),
+    ("model", toJson model.toString)]) (method := "PUT")
 
 private def getCachedModuleVersionTokens (mods : Array Name) : IO (Array (Option String)) :=
   request "/version" (Json.mkObj [("modules", toJson (mods.map (·.toString)))])
@@ -95,7 +97,7 @@ def toPremise (name : Name) : MetaM (Option Premise) := do
 def select (log : String → String → IO Unit) (goal : MVarId) (config : LibrarySuggestions.Config) :
     MetaM (Array Suggestion) := withOptions roundtrip do
   startPremiseDaemon log
-  setIndex (← premiseDb)
+  setConfig (← premiseDb) (← premiseModel log)
   let env ← getEnv
   let mods := env.allImportedModuleNames.filter (!isDeniedModule env ·)
   let cached ← getCachedModuleVersionTokens mods
