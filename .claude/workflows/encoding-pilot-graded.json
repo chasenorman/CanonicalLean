@@ -118,5 +118,53 @@
     "implementation": "In `monomorphizePremise`, return the monomorphizations only when at least one exists. Otherwise fall through to the existing generic path that returns the constant unchanged.",
     "probability": 0.35,
     "notes": "Not adopted."
+  },
+  {
+    "issue": "The `SIMP_HARD_CODE` entry that is supposed to keep the constructor-rewriting simp lemma out names `Int.ofNat_eq_coe`, which is now only a deprecated alias, so the real simp lemma `Int.ofNat_eq_natCast` still becomes the rule `Int.ofNat n ↦ NatCast_natCast_0 n`.",
+    "implementation": "The `SIMP_HARD_CODE` key in Canonical/Util.lean now names `Int.ofNat_eq_natCast`, the lemma that is actually in the `@[simp]` set, so the earlier hard-code exclusion (6b15ce6) takes effect.",
+    "probability": 0.72,
+    "notes": "Accepted."
+  },
+  {
+    "issue": "`unfoldInstDefn` substitutes a constant's raw `info.value?` without instantiating its universe parameters. So an instance argument built from a non-instance definition with universe parameters (here `beqOfOrd.{u_1}`) unfolds to a term that mentions the declaration's own level parameter `u_1`, and the enclosing application never monomorphizes.",
+    "implementation": "`unfoldInstDefn` now reads the head's use-site levels from `.const name us` and unfolds to `value.instantiateLevelParams info.levelParams us`.",
+    "probability": 0.72,
+    "notes": "Accepted."
+  },
+  {
+    "issue": "The symbols on the right-hand sides of a definition's equation lemmas get types, so unfolding an irrelevant hypothesis uses up the MAX_TYPES = 100 type budget, and the goal's own symbols end up with no type.",
+    "implementation": "In `constRules` (Canonical/ToCanonical/Translate.lean), the `getEqnsFor?` branch now translates its equation rules under `noTypes := true`, the same setting the `defnInfo` branch already uses for a definition body.",
+    "probability": 0.6,
+    "notes": "Rejected."
+  },
+  {
+    "issue": "`monomorphizeConst` sets every universe left free in a monomorphized premise to `Level.zero`. A universe-polymorphic goal (here `β : α → Type v`) therefore gets monomorphizations at `v`, and the premise gets separate ones at `0` (`insertMany_2` and `_proof_1_2` instead of the goal's `insertMany_0` and `_proof_1_0`), so even the premise that is exactly the goal cannot be applied.",
+    "implementation": "`monomorphizeConst` now returns each result as a `UnivAbstracted`, as the deleted comment \"The proper thing to do is to return the levels, too.\" suggested. `monomorphizePremise` fills those levels with fresh level metavariables, the same way unmonomorphized premises get `mkConstWithFreshMVarLevels`. The `monomorphize` tactic still sets them to zero, so its behavior does not change.",
+    "probability": 0.6,
+    "notes": "Rejected."
+  },
+  {
+    "issue": "`destructTactic` reverts local definitions (let-decls) along with ordinary hypotheses, and `destructMain`'s `whnf` then zeta-reduces the resulting `let`. A let-bound hypothesis such as `h₁ : i % w < w := Nat.mod_lt i p` therefore disappears from the problem.",
+    "implementation": "In `destructTactic` (Canonical/Destruct/Basic.lean), let-decls now join instance-implicit fvars in the set of locals that stay in context, along with their dependencies. `toDecl`'s existing value branch then translates them as definitions with a δ-rule.",
+    "probability": 0.57,
+    "notes": "Rejected."
+  },
+  {
+    "issue": "`validSimpLemma` rejects any candidate rule that has a function-typed variable or any λ in its left-hand side. Because the encoding is η-long, this also rejects every lemma over a dependent family `β : α → Type`, such as `(a ∈ m) = (m.contains a = true)` for `DHashMap.Raw`, whose left-hand side is `Membership_mem_0 (λ a ↦ β a) m a`.",
+    "implementation": "`validSimpLemma` now accepts a left-hand side when each variable occurs exactly once and every argument is either the η-expansion of a variable (`isEta`) or a λ-free application of a non-variable head to such arguments (`patternArg`). This replaces the separate higher-order and `containsLambda` checks.",
+    "probability": 0.57,
+    "notes": "Accepted."
+  },
+  {
+    "issue": "Equation-lemma and simp rules keep each constructor's parameters in their left-hand side, such as the predicate `λ m ↦ 0 < m.buckets.size` of `Subtype.mk` or the family `λ a ↦ β a` of `Sigma.mk`. Canonical's pattern compiler cannot match a lambda in a pattern, so these rules never fire and they also break the problem: even `myG ⟨n, h⟩ = myG ⟨n, h⟩` has no proof.",
+    "implementation": "In `toSpine`, when it translates a rule's left-hand side (`synthInst := false`, used only by `toRule`), a constructor application gets wildcards for its first `numParams` arguments, as `projRule`, `recRule` and `reduceCtorEqRules` already do.",
+    "probability": 0.55,
+    "notes": "Rejected: an ad-hoc patch in place of a general system to determine whether arguments in a pattern are necessary."
+  },
+  {
+    "issue": "`toRule` wraps its whole body in `withConfig (iota := false)`. The setting therefore leaks into `toSpine` and everything it reaches: type normalization in `toTerm`/`addArgs`, `mkProjection` in `elimSpecial`, and the rules and types of every constant first reached from a rule. Translation crashes when a type needs iota reduction to expose its Π or structure shape.",
+    "implementation": "Only the top-level `whnf` of each rule side runs under `iota := false`; the two `toSpine` calls, and everything they reach, now run under the ambient config.",
+    "probability": 0.55,
+    "notes": "Accepted."
   }
 ]
