@@ -23,8 +23,8 @@ structure CanonicalResult where
   branching: Float32
 deriving Inhabited
 
-/-- Generate terms of a given type, with given timeout and desired count. -/
-@[never_extract, extern "canonical"] opaque canonical : @& Decl → UInt64 → USize → IO CanonicalResult
+/-- Generate terms of a given type, with given timeout, desired count, and learned heuristics setting. -/
+@[never_extract, extern "canonical"] opaque canonical : @& Decl → UInt64 → USize → Bool → IO CanonicalResult
 
 /-- Terminate all invocations of `canonical` that are currently running. -/
 @[never_extract, extern "cancel"] opaque cancel : IO Unit
@@ -69,7 +69,7 @@ def preprocess (goal : MVarId) (config : Config) (structs : Array Name) :
 /-- Run Canonical asynchronously, so that we can check for cancellation. -/
 def runCanonical (decl : Decl) (timeout : UInt64) (config : Config) : MetaM CanonicalResult := do
   checkInterrupted
-  let task ← IO.asTask (prio := .dedicated) (canonical decl timeout config.count.toUSize)
+  let task ← IO.asTask (prio := .dedicated) (canonical decl timeout config.count.toUSize config.ai)
   while !(← IO.hasFinished task) do
     if ← interrupted then
       cancel

@@ -57,7 +57,7 @@ def automateCanonical (original : MVarId) (suggestions : Array Name) (timeout : 
   let decl ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
     Canonical.toCanonical name (← goal'.getType) (suggestions ++ premises) (structs.push ``Canonical.Pi) config
   if (← IO.checkCanceled) then throwError "canceled"
-  let result ← Canonical.canonical decl timeout config.count.toUSize
+  let result ← Canonical.canonical decl timeout config.count.toUSize config.ai
   if (← IO.checkCanceled) then throwError "canceled"
   let proofs ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
     let proofs ← result.terms.mapM fun term => do Canonical.fromCanonical term (← goal'.getType)

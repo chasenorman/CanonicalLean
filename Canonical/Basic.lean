@@ -80,3 +80,5 @@ structure Config where
   destruct: Bool := true
   /-- Add premises from the current premise selector. -/
   suggestions: Bool := false
+  /-- Use a small machine learning model for heuristics on difficult problems. -/
+  ai: Bool := true
