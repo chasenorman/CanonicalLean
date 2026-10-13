@@ -162,7 +162,7 @@ def destructPremise (const : Name) (expr type : Lean.Expr) (name : Name) (simp :
         let expr := destruct.bindingBody!.instantiate1 expr
         -- m.mvarId!.assign expr
         modifyThe MonoState fun s => { s with
-          mono := s.mono.insert (.sort .zero) (⟨m.mvarId!, ⟨expr, []⟩⟩ :: ((s.mono.get? (.sort .zero)).getD []))
+          mono := s.mono.insert (.sort .zero) (⟨m.mvarId!, expr⟩ :: ((s.mono.get? (.sort .zero)).getD []))
         }
         let (mvarName, mvarType) ← toHead m
         result := result.push (expr, mvarType, mvarName)
