@@ -9,33 +9,34 @@ namespace Monomorphize
 
 public section
 
-/-- An expression with `levels` as `param` universes. -/
-structure UnivAbstracted where
-  expr: Expr
-  levels: List Name
-
-/-- UnivAbstracted are equal up to renaming of `levels`. -/
-instance : BEq UnivAbstracted where
-  beq := fun x y =>
-    if x.levels.length != y.levels.length then false else
-    let levels := y.levels.map Level.param
-    y.expr == (instantiateLevelParams x.expr x.levels levels)
-
-/-- Uses the hashing for `Expr` with a canonical instantiation of `levels`. -/
-instance : Hashable UnivAbstracted where
-  hash := fun x => (instantiateLevelParams x.expr x.levels (x.levels.map (fun _ => Level.zero))).hash
-
 /-- A metavariable and its future intended assignment, to serve as a new symbol during pre-processing. -/
 structure MetaAbstraction where
   id: MVarId
-  assignment: UnivAbstracted
+  assignment: Expr
+
+inductive Affix where
+  /-- Instance arguments, and what they determine. -/
+  | insts
+  /-- Also type arguments, recursively: `Set α` fixes `α`, `Fin n` keeps `n` as an argument.
+      Operations without instance arguments get symbols too, and premise copies are also unified
+      with the types in the goal. -/
+  | types
+  /-- Also every argument the type of the symbol depends on: `Fin (n+1)` is fixed whole, and so is
+      `n` in `Fin.ofNat' n`. Symbols then have simple types. -/
+  | typeParameters
+  deriving Ord
+
+instance : LE Affix := leOfOrd
 
 /-- State monad for monomorphization -/
 structure MonoState where
   /-- A mapping from symbols (consts, fvars, mvars) to their monomorphizations. -/
   mono: HashMap Expr (List MetaAbstraction) := .emptyWithCapacity 8
-  /-- Types of instances relevant to the problem. -/
-  candidateInsts: HashSet UnivAbstracted := .emptyWithCapacity 8
+  /-- Types of instances relevant to the problem. For `affix ≥ types`, also the closed types in the
+      goal and hypotheses, including the types of their closed subterms. -/
+  candidateInsts: HashSet Expr := .emptyWithCapacity 8
+  /-- How much of an occurrence a symbol fixes. -/
+  affix: Affix := .insts
   /-- FVars that are safe to be used in the definition of monomorphizations. -/
   globalFVars: HashSet FVarId := .emptyWithCapacity 0
   /-- Names of all constants we encounter. -/
@@ -44,9 +45,12 @@ structure MonoState where
   hasNewConst: Bool := true
 
 instance : ToString MonoState where
-  toString s := s!"{s.mono.toList.map fun x => x.1}\n{s.candidateInsts.toList.map fun x => x.expr}"
+  toString s := s!"{s.mono.toList.map fun x => x.1}\n{s.candidateInsts.toList}"
 
 abbrev MonoM := StateRefT MonoState MetaM
+
+/-- Needed for `withoutModifyingState`. The `MonoState` is not part of the saved state. -/
+instance : MonadBacktrack Meta.SavedState MonoM := ⟨Meta.saveState, fun s => s.restore⟩
 
 /-- Add `name` to `constNames`. -/
 def addConstant (name : Name) : MonoM Unit := do
@@ -70,7 +74,7 @@ def addFVarAsCandidate (id : FVarId) : MonoM Unit := do
   assert! (← id.getBinderInfo).isInstImplicit
   if (← get).globalFVars.contains id then
     let type ← id.getType
-    modify fun s => { s with candidateInsts := s.candidateInsts.insert ⟨type, []⟩ }
+    modify fun s => { s with candidateInsts := s.candidateInsts.insert type }
 
 /-- Set `hasNewConst` to `false` and return the previous value. -/
 def consumeNewConstFlag : MonoM Bool := do
@@ -121,8 +125,8 @@ def onlyHasGlobalFVars (e : Expr) : MonoM Bool := do
 /-- Add a typeclass instance to `candidateInsts`. -/
 partial def addAsCandidate (inst : Expr) : MonoM Unit := do
   if ← onlyHasGlobalFVars inst then
-    let ⟨levels, _, type⟩ ← abstractMVars (← inferType inst)
-    modify fun inst => { inst with candidateInsts := inst.candidateInsts.insert ⟨type, levels.toList⟩ }
+    let ⟨_, _, type⟩ ← abstractMVars (← inferType inst) (levels := false)
+    modify fun inst => { inst with candidateInsts := inst.candidateInsts.insert type }
 
 /-- Unfolds constants that are not global instances at the head of `e`.  -/
 partial def unfoldInstDefn (e : Expr) : MetaM Expr := do
@@ -138,36 +142,45 @@ partial def unfoldInstDefn (e : Expr) : MetaM Expr := do
 /-- Apply `transform` to the type and local context of `goal`. -/
 def transformMVar [Monad n] [MonadLiftT MetaM n] [MonadMCtx n] (goal : MVarId) (transform : Expr → n Expr) : n (Expr × LocalContext) := do
   let decl := ((← getMCtx).findDecl? goal).get!
-  let type ← transform decl.type
+  let type ← transform (← instantiateMVars decl.type)
 
-  let lctx := { decl.lctx with decls := ← decl.lctx.decls.mapM fun decl => do decl.mapM fun decl => do
-    let decl := decl.setType (← transform decl.type)
-
-    if let some value := decl.value? then
-      pure (decl.setValue (← transform value))
-    else pure decl
-  }
+  let mut lctx := decl.lctx
+  for ldecl in decl.lctx do
+    if ldecl.isImplementationDetail then continue
+    let mut newDecl := ldecl.setType (← transform (← instantiateMVars ldecl.type))
+    if let some value := ldecl.value? then
+      newDecl := newDecl.setValue (← transform value)
+    lctx := lctx.modifyLocalDecl ldecl.fvarId fun _ => newDecl
 
   return (type, lctx)
 
-/-- Abstract all non-instImplicit subterms in `e` into metavaraibles.
-    Add all instImplicit subterms as candidate instances. -/
+/-- Abstract all non-affixed subterms in `e` into metavaraibles. -/
 partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
   withApp e fun fn args => do
     let some (_, type, levels) ← getHeadInfo fn | return none
-    -- Assign new metavariable levels so outputs are independent of levels.
-    let mvarlevels ← mkFreshLevelMVars levels.length
-    let fn := fn.instantiateLevelParams levels mvarlevels
+    let us := if let .const _ us := fn then us else []
     let (metas, binders, _) ← forallMetaTelescopeReducing
-      (type.instantiateLevelParams levels mvarlevels) args.size
+      (type.instantiateLevelParams levels us) args.size
     -- Check that `e` is eta expanded.
     if metas.size != args.size then return none
+    let affix := (← get).affix
     for i in [0:binders.size] do
-      if binders[i]!.isInstImplicit && (← isClass? (← inferType metas[i]!)).isSome then
+      let type ← metas[i]!.mvarId!.getType
+      if affix matches .typeParameters && type.isType then
+        if args[i]!.hasExprMVar then return none
+        addAsCandidate args[i]!
+        let success ← isDefEqGuarded metas[i]! args[i]!
+        if !success then
+          logWarning s!"Monomorphization failure: {e}"
+          return none
+      else if binders[i]!.isInstImplicit && (← isClass? type).isSome ||
+        affix ≥ .types && type.isSort then
+        -- The instance still has a metavariable in it: nothing to specialize yet.
+        if args[i]!.hasExprMVar then return none
         let some childPattern ← monoPattern (← unfoldInstDefn args[i]!) | return none
         addAsCandidate childPattern
         -- Assign `metas[i]` to the child pattern. Use `isDefEq` to create a valid term.
-        let success ← isDefEq metas[i]! childPattern
+        let success ← isDefEqGuarded metas[i]! childPattern
         if !success then
           logWarning s!"Monomorphization failure: {e}"
           return none
@@ -181,47 +194,46 @@ partial def isDefEqProofRelevant (pattern e : Expr) : MetaM Bool := withoutProof
     isDefEqGuarded fn e.getAppFn <&&> (pattern.getAppArgs.zip e.getAppArgs).allM fun (p, a) => isDefEqProofRelevant p a
   else isDefEqGuarded pattern e
 
+def eligibleHead (type : Expr) (affix : Affix) : MetaM Bool := do
+  forallTelescopeReducing type fun xs body => do
+    return (← xs.anyM fun x => do pure (← x.fvarId!.getBinderInfo).isInstImplicit) ||
+      (affix ≥ .types && !body.isProp && (← xs.anyM fun x => do pure (← x.fvarId!.getType).isSort))
+
 /-- Monomorphizes the head of `e`, creating a new monomorphization metavariable if necessary. -/
 partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
   withOptions (backward.isDefEq.respectTransparency.set · false) do withApp e fun fn _ => do
     if let some (fn, type, _) ← getHeadInfo fn then
-      let hasInstImplicit ← forallTelescopeReducing type fun xs _ =>
-        do xs.anyM fun x => do pure (← x.fvarId!.getBinderInfo).isInstImplicit
-      if hasInstImplicit then
+      if ← eligibleHead type (← get).affix then
         -- Check if we can use a pre-existing monomorphization.
         let cachedSpec := (← get).mono.getD fn []
-        for ⟨specmVar, ⟨specBody, specLevels⟩⟩ in cachedSpec do
-          let mvarlevels ← mkFreshLevelMVars specLevels.length
-          let instantiated := specBody.instantiateLevelParams specLevels mvarlevels
-          let ⟨metas, _, body⟩ ← lambdaMetaTelescope instantiated
-          if ← isDefEqProofRelevant body e then
-            let newExpr ← pure (mkAppN (.mvar specmVar) (← metas.mapM instantiateMVars))
-            return .continue newExpr
+        for ⟨specmVar, specBody⟩ in cachedSpec do
+          if let some result ← Meta.withNewMCtxDepth do
+              let (metas, _, body) ← lambdaMetaTelescope specBody
+              if ← isDefEqProofRelevant body e then
+                pure (some (mkAppN (.mvar specmVar) (← metas.mapM instantiateMVars)))
+              else pure none then
+            return .continue result
 
         -- Otherwise, create a monomorphization.
-        if let some monoPattern ← withConfig ({ · with univApprox := false }) do monoPattern e then
-          if ← onlyHasGlobalFVars monoPattern then
-            -- Abstract monoPattern before isDefEq, so as to not assign the mvars.
+        let some (abstracted, args) ← Meta.withNewMCtxDepth do
+            let some monoPattern ← withConfig ({ · with univApprox := false }) do monoPattern e | return none
+            unless ← onlyHasGlobalFVars monoPattern do return none
             let monoPattern ← instantiateMVars monoPattern
-            let ⟨paramNames, mvars, abstracted⟩ ← abstractMVars monoPattern
-            let specName := Name.mkSimple (((← toName fn).num cachedSpec.length).toStringWithSep "_" true)
-            let specMvarId := (← mkFreshExprMVar (← inferType
-              (abstracted.instantiateLevelParams paramNames.toList (← mkFreshLevelMVars paramNames.size))) .syntheticOpaque specName).mvarId!
-
+            -- Abstract monoPattern before isDefEq, so as to not assign the mvars.
+            let ⟨_, mvars, abstracted⟩ ← abstractMVars monoPattern (levels := false)
             let _ ← addConstants monoPattern.getUsedConstantsAsSet
 
             let success ← isDefEqProofRelevant monoPattern e
             if !success then
               logWarning s!"Failed to monomorphize {fn}"
-              return .continue
-
-            -- Add this to mono state.
-            modify fun s => { s with
-              mono := s.mono.insert fn (⟨specMvarId, ⟨abstracted, paramNames.toList⟩⟩ :: cachedSpec)
-            }
-
-            let newExpr ← instantiateMVars (mkAppN (.mvar specMvarId) mvars)
-            return .continue newExpr
+              return none
+            return some (abstracted, ← mvars.mapM instantiateMVars)
+          | return .continue
+        let specName := Name.mkSimple (((← toName fn).num cachedSpec.length).toStringWithSep "_" true)
+        let specMvar ← mkFreshExprMVar (← inferType abstracted) .syntheticOpaque specName
+        -- Add this to mono state.
+        modify fun s => { s with mono := s.mono.insert fn (⟨specMvar.mvarId!, abstracted⟩ :: cachedSpec) }
+        return .continue (mkAppN specMvar args)
     return .continue
 
 def preprocessMono (e : Expr) : MonoM Expr := do
@@ -232,7 +244,7 @@ def preprocessMono (e : Expr) : MonoM Expr := do
 def finalizeMonos : MonoM Unit := do
   (← get).mono.values.flatten.forM fun mono =>
     do if !(← mono.id.isAssigned) then
-      mono.id.assign mono.assignment.expr
+      mono.id.assign mono.assignment
 
 /-- Get the types of all instImplicit subterms in `e`. -/
 partial def getInstanceTypes (e : Expr) : MetaM (HashSet Expr) := do
@@ -252,8 +264,22 @@ partial def getInstanceTypes (e : Expr) : MetaM (HashSet Expr) := do
   | mdata _ b | lam _ _ b _ | letE _ _ _ b _ => getInstanceTypes b
   | _ => return ∅
 
+/-- A type whose head is a constant or fvar, and which is not a `Prop`. A metavariable head has
+    nothing to match on, and matching propositions would unify their operands (`a < b` with `x < y`). -/
+def isRigidType (e : Expr) : MonoM Bool := do
+  unless e.getAppFn.isConst || e.getAppFn.isFVar do return false
+  try return (← isType e) && !(← isProp e) catch _ => return false
+
+/-- The rigid types in `e` that contain metavariables, outermost first. -/
+def collectTypeHoles (e : Expr) : MonoM (Array Expr) := do
+  let acc ← IO.mkRef #[]
+  e.forEach fun t => do
+    if !t.hasLooseBVars && t.hasExprMVar then
+      if ← isRigidType t then acc.modify (·.push t)
+  acc.get
+
 /-- Find all possible ways to unify each element in `todo` with elements of `candidates`, and accumulate the result of `cb` on each. -/
-partial def unifyWithCand (todo : List Expr) (candidates : List UnivAbstracted) (cb : MonoM (Option Expr)) : MonoM (List Expr) := do
+partial def unifyWithCand (todo : List Expr) (candidates : List Expr) (cb : MonoM (Option Expr)) : MonoM (List Expr) := do
   match todo with
   | [] => return (← cb).toList
   | type :: todo =>
@@ -261,11 +287,10 @@ partial def unifyWithCand (todo : List Expr) (candidates : List UnivAbstracted) 
     -- If there is unification to be done,
     if type.hasMVar then
       -- For each candidate instance,
-      let branches ← candidates.filterMapM fun (inst : UnivAbstracted) => do
-        withoutModifyingMCtx do -- fork the MCtx to consider each branch independently
-          -- Abstract over lambda bindings and universe levels.
-          let (_, _, inst) ← lambdaMetaTelescope
-            (inst.expr.instantiateLevelParams inst.levels (← mkFreshLevelMVars inst.levels.length))
+      let branches ← candidates.filterMapM fun (inst : Expr) => do
+        withoutModifyingState do -- fork the MCtx to consider each branch independently
+          -- Abstract over lambda bindings.
+          let (_, _, inst) ← lambdaMetaTelescope inst
           if ← isDefEqGuarded type inst then
             -- continue unifying the remainder of `todo`.
             return some (← unifyWithCand todo candidates cb)
@@ -275,8 +300,8 @@ partial def unifyWithCand (todo : List Expr) (candidates : List UnivAbstracted) 
     -- If there is no unification, we continue anyway.
     unifyWithCand todo candidates cb
 
-/-- Generates all monomorphizations for a given constant. -/
-def monomorphizeConst (name : Name) : MonoM (List Expr) := do
+/-- The body of `monomorphizeConst`. -/
+def monomorphizeConstCore (name : Name) : MonoM (List Expr) := do
   -- First, get the instance implicit arguments of the constant.
   let constInfo ← getConstInfo name
 
@@ -293,8 +318,13 @@ def monomorphizeConst (name : Name) : MonoM (List Expr) := do
   -- Filter for instImplicit arguments and put them into todo list.
   let instImplicitTypes ← instImplicit.mapM fun mvar => do mvar.mvarId!.getType
   let todo := (← getInstanceTypes body).insertMany instImplicitTypes.toList
+  -- For `affix ≥ types`, also unify every rigid type with holes, binder types first and then the
+  -- body, with the types in the goal. At `insts` the instances already determine what a symbol fixes.
+  let typeItems ← if (← get).affix ≥ .types then
+      ((← mvars.mapM (·.mvarId!.getType)).push body).flatMapM collectTypeHoles
+    else pure #[]
   withOptions (backward.isDefEq.respectTransparency.set · false) do
-  unifyWithCand todo.toList (← get).candidateInsts.toList do
+  unifyWithCand (todo.toList ++ typeItems.toList) (← get).candidateInsts.toList do
     for mvar in instImplicit do
       let mty ← instantiateMVars (← mvar.mvarId!.getType)
       match ← trySynthInstance mty with
@@ -302,9 +332,16 @@ def monomorphizeConst (name : Name) : MonoM (List Expr) := do
       | .none => return none
       | .undef => pure ()
 
+    -- Solve the universe constraints postponed during unification. No copy if that fails.
+    unless ← processPostponed (mayPostpone := false) do return none
+    -- A hypothesis cannot be universe polymorphic, so any level still undetermined is set to zero.
+    for l in levels do
+      if let .mvar m := l then
+        unless ← isLevelMVarAssigned m do
+          assignLevelMVar m .zero
     let appliedExpr := mkAppN (Expr.const name levels) mvars
     let instantiated ← instantiateMVars appliedExpr
-    let abstrResult ← abstractMVars instantiated
+    let abstrResult ← abstractMVars instantiated (levels := false)
     let binfos := abstrResult.mvars.map fun mvar =>
       (mvars.idxOf? mvar).map fun idx => binders[idx]!
 
@@ -312,19 +349,21 @@ def monomorphizeConst (name : Name) : MonoM (List Expr) := do
     let result := updateLambdaBinderInfos abstrResult.expr binfos.toList
     let set := (← get).mono.getD (Expr.const name (levels.map fun _ => Level.zero)) []
     for mono in set do
-      let sameLevels := mono.assignment.expr.instantiateLevelParams mono.assignment.levels (abstrResult.paramNames.toList.map Level.param)
-      if sameLevels == result then
+      if mono.assignment == result then
         return none
-
-    -- The proper thing to do is to return the levels, too.
-    let result := result.instantiateLevelParams abstrResult.paramNames.toList (abstrResult.paramNames.toList.map (fun _ => Level.zero))
 
     let _ ← addConstants result.getUsedConstantsAsSet
 
     return result
 
+/-- Generates all monomorphizations for a given constant. -/
+def monomorphizeConst (name : Name) : MonoM (List Expr) :=
+  (·.eraseDups) <$> Meta.withNewMCtxDepth (monomorphizeConstCore name)
+
 structure MonoConfig where
   canonicalize : Bool := true
+  /-- How much of an occurrence a symbol fixes: `insts`, `types` or `firstOrder`. -/
+  affix : Affix := .insts
 
 declare_config_elab monoConfig MonoConfig
 
@@ -336,7 +375,8 @@ def monomorphizeTactic (goal : MVarId) (ids : Array Syntax) (config : MonoConfig
         addFVarAsCandidate decl.fvarId
 
   -- First pass: collect `candidateInsts` and ignore the transformation result.
-  let _ ← transformMVar goal fun e => Meta.transform e (pre := monoTransformStep)
+  let _ ← transformMVar goal fun e => do
+    Meta.transform e (pre := monoTransformStep)
 
   -- Process premises by creating all monomorphized versions.
   -- Name is the new name we create and expr is the monomorphized instance.
@@ -360,14 +400,15 @@ def monomorphizeTactic (goal : MVarId) (ids : Array Syntax) (config : MonoConfig
       monos.foldlM (fun goal mono => do
         -- Assign the metavariable to a new local decl which is assigned to the monomorphization.
         let name := ((← getMCtx).getDecl mono.id).userName
-        let noteResult ← MVarId.note goal name (mono.assignment.expr.instantiateLevelParams mono.assignment.levels (mono.assignment.levels.map (fun _ => Level.zero)))
+        let noteResult ← MVarId.note goal name mono.assignment
         mono.id.assign (.fvar noteResult.1)
         pure noteResult.2
       ) goal
     ) goal
 
     -- The second pass substitutes the `monos`.
-    let (type, lctx) ← transformMVar goal fun e => Meta.transform e (pre := monoTransformStep)
+    let (type, lctx) ← goal.withContext do
+      transformMVar goal fun e => Meta.transform e (pre := monoTransformStep)
     -- Failsafe for new `monos` being added during the second pass.
     let _ ← finalizeMonos
     let _ ← goal.modifyLCtx fun _ => lctx

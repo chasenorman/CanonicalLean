@@ -12,10 +12,12 @@ syntax (name := monomorphize) "monomorphize " Parser.Tactic.optConfig ("[" ident
   let config ← monoConfig config
   liftMetaTactic1 fun goal =>
     goal.withContext do
-      (monomorphizeTactic goal ids.getElems config).run' { globalFVars := .ofArray (← getLCtx).getFVarIds }
+      (monomorphizeTactic goal ids.getElems config).run'
+        { globalFVars := .ofArray (← getLCtx).getFVarIds, affix := config.affix }
 | `(tactic| monomorphize $config) => do
   let config ← monoConfig config
   liftMetaTactic1 fun goal =>
     goal.withContext do
-      (monomorphizeTactic goal #[] config).run' { globalFVars := .ofArray (← getLCtx).getFVarIds }
+      (monomorphizeTactic goal #[] config).run'
+        { globalFVars := .ofArray (← getLCtx).getFVarIds, affix := config.affix }
 | _ => throwUnsupportedSyntax
