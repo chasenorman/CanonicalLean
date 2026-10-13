@@ -23,7 +23,7 @@ inductive Affix where
   | types
   /-- Also every argument the type of the symbol depends on: `Fin (n+1)` is fixed whole, and so is
       `n` in `Fin.ofNat' n`. Symbols then have simple types. -/
-  | firstOrder
+  | typeParameters
   deriving Ord
 
 instance : LE Affix := leOfOrd
@@ -154,54 +154,36 @@ def transformMVar [Monad n] [MonadLiftT MetaM n] [MonadMCtx n] (goal : MVarId) (
 
   return (type, lctx)
 
-/-- Abstract all non-instImplicit subterms in `e` into metavaraibles.
-    Add all instImplicit subterms as candidate instances.
-    For `affix ≥ types`, type arguments are instead patterned recursively: type constructors, type
-    arguments and instances are kept, term indices become metavariables. For `firstOrder`, every
-    argument the type of the symbol depends on is kept as well. -/
+/-- Abstract all non-affixed subterms in `e` into metavaraibles. -/
 partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
   withApp e fun fn args => do
     let some (_, type, levels) ← getHeadInfo fn | return none
     let us := if let .const _ us := fn then us else []
-    let (metas, binders, rest) ← forallMetaTelescopeReducing
+    let (metas, binders, _) ← forallMetaTelescopeReducing
       (type.instantiateLevelParams levels us) args.size
     -- Check that `e` is eta expanded.
     if metas.size != args.size then return none
     let affix := (← get).affix
-    -- For `firstOrder`: the arguments the type of the symbol depends on, those in the type of a
-    -- non-proof binder or in the result type. Proof binders are skipped so that `h : val < n`
-    -- does not fix `val` in `Fin.mk val h`.
-    let mut dependedOn : HashSet MVarId := {}
-    if affix ≥ .firstOrder then
-      for t in #[rest] ++ (← metas.mapM fun m => m.mvarId!.getType) do
-        unless ← isProp t do
-          for m in (t.collectMVars {}).result do
-            dependedOn := dependedOn.insert m
     for i in [0:binders.size] do
-      if binders[i]!.isInstImplicit && (← isClass? (← inferType metas[i]!)).isSome then
+      let type ← metas[i]!.mvarId!.getType
+      if affix matches .typeParameters && type.isType then
+        if args[i]!.hasExprMVar then return none
+        addAsCandidate args[i]!
+        let success ← isDefEqGuarded metas[i]! args[i]!
+        if !success then
+          logWarning s!"Monomorphization failure: {e}"
+          return none
+      else if binders[i]!.isInstImplicit && (← isClass? type).isSome ||
+        affix ≥ .types && type.isSort then
         -- The instance still has a metavariable in it: nothing to specialize yet.
         if args[i]!.hasExprMVar then return none
         let some childPattern ← monoPattern (← unfoldInstDefn args[i]!) | return none
         addAsCandidate childPattern
         -- Assign `metas[i]` to the child pattern. Use `isDefEq` to create a valid term.
-        let success ← isDefEq metas[i]! childPattern
+        let success ← isDefEqGuarded metas[i]! childPattern
         if !success then
           logWarning s!"Monomorphization failure: {e}"
           return none
-      else if affix ≥ .types then
-        let a := args[i]!
-        -- Closed: no metavariables, and no fvars besides those of the goal.
-        let closed := !a.hasExprMVar && (← onlyHasGlobalFVars a)
-        -- What this level fixes. `none` leaves the argument abstracted.
-        let fixed? : Option Expr ←
-          if affix ≥ .firstOrder && closed && dependedOn.contains metas[i]!.mvarId! then pure (some a)
-          -- Recurse into a type whose head is a constant or an fvar of the goal. A type with a bound
-          -- variable or metavariable at the head is abstracted whole.
-          else if (← isType a) && (a.getAppFn.isConst || a.getAppFn.isFVar)
-              && (← onlyHasGlobalFVars a.getAppFn) then monoPattern a
-          else pure none
-        if let some fixed := fixed? then
-          let _ ← isDefEq metas[i]! fixed
     instantiateMVars (mkAppN fn metas)
 
 /-- `isDefEq` that also assigns metavariables within proof arguments of `pattern`,
@@ -212,43 +194,31 @@ partial def isDefEqProofRelevant (pattern e : Expr) : MetaM Bool := withoutProof
     isDefEqGuarded fn e.getAppFn <&&> (pattern.getAppArgs.zip e.getAppArgs).allM fun (p, a) => isDefEqProofRelevant p a
   else isDefEqGuarded pattern e
 
-/-- At `affix ≥ types`, whether `e`, an occurrence of `fn`, gets a symbol although `fn` has no
-    instance arguments. Not if `fn` is an instance or a type former, or `e` is a proof. Everything
-    returning `Prop` is a type former, so `Eq`, `And`, `Exists` never get symbols. -/
-def eligibleHead (fn : Expr) (e : Expr) : MonoM Bool := do
-  unless (← get).affix ≥ .types do return false
-  unless fn.isConst || fn.isFVar do return false
-  if let .const name _ := fn then
-    if ← isInstance name then return false
-  -- Inferring the type of `e` fails when the type of `fn` does not reduce to a Pi. Those
-  -- occurrences are left alone.
-  try
-    return !(← isTypeFormerType (← inferType fn)) && !(← isProof e)
-  catch _ => return false
+def eligibleHead (type : Expr) (affix : Affix) : MetaM Bool := do
+  forallTelescopeReducing type fun xs body => do
+    return (← xs.anyM fun x => do pure (← x.fvarId!.getBinderInfo).isInstImplicit) ||
+      (affix ≥ .types && !body.isProp && (← xs.anyM fun x => do pure (← x.fvarId!.getType).isSort))
 
 /-- Monomorphizes the head of `e`, creating a new monomorphization metavariable if necessary. -/
 partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
   withOptions (backward.isDefEq.respectTransparency.set · false) do withApp e fun fn _ => do
     if let some (fn, type, _) ← getHeadInfo fn then
-      let hasInstImplicit ← forallTelescopeReducing type fun xs _ =>
-        do xs.anyM fun x => do pure (← x.fvarId!.getBinderInfo).isInstImplicit
-      if hasInstImplicit || (← eligibleHead fn e) then
+      if ← eligibleHead type (← get).affix then
         -- Check if we can use a pre-existing monomorphization.
         let cachedSpec := (← get).mono.getD fn []
         for ⟨specmVar, specBody⟩ in cachedSpec do
-          let some args ← Meta.withNewMCtxDepth do
-              let ⟨metas, _, body⟩ ← lambdaMetaTelescope specBody
-              if ← isDefEqProofRelevant body e then some <$> metas.mapM instantiateMVars else pure none
-            | continue
-          return .continue (mkAppN (.mvar specmVar) args)
+          if let some result ← Meta.withNewMCtxDepth do
+              let (metas, _, body) ← lambdaMetaTelescope specBody
+              if ← isDefEqProofRelevant body e then
+                pure (some (mkAppN (.mvar specmVar) (← metas.mapM instantiateMVars)))
+              else pure none then
+            return .continue result
 
         -- Otherwise, create a monomorphization.
         let some (abstracted, args) ← Meta.withNewMCtxDepth do
             let some monoPattern ← withConfig ({ · with univApprox := false }) do monoPattern e | return none
             unless ← onlyHasGlobalFVars monoPattern do return none
             let monoPattern ← instantiateMVars monoPattern
-            -- Every argument is still a metavariable, so there is nothing to fix.
-            if monoPattern.getAppArgs.all (·.isMVar) then return none
             -- Abstract monoPattern before isDefEq, so as to not assign the mvars.
             let ⟨_, mvars, abstracted⟩ ← abstractMVars monoPattern (levels := false)
             let _ ← addConstants monoPattern.getUsedConstantsAsSet
@@ -299,18 +269,6 @@ partial def getInstanceTypes (e : Expr) : MetaM (HashSet Expr) := do
 def isRigidType (e : Expr) : MonoM Bool := do
   unless e.getAppFn.isConst || e.getAppFn.isFVar do return false
   try return (← isType e) && !(← isProp e) catch _ => return false
-
-/-- The types in the goal that premises can be unified with: every closed subterm of `e` that is a
-    rigid type, and the type of every closed subterm (`Finset.range n` has type `Finset ℕ`, which
-    need not occur in `e`). -/
-def collectClosedTypes (e : Expr) : MonoM (HashSet Expr) := do
-  let acc ← IO.mkRef {}
-  e.forEach fun t => do
-    if !t.hasLooseBVars && !t.hasMVar then
-      let ts ← try pure #[t, ← inferType t] catch _ => pure #[t]
-      for t in ts do
-        if ← isRigidType t then acc.modify (·.insert t)
-  acc.get
 
 /-- The rigid types in `e` that contain metavariables, outermost first. -/
 def collectTypeHoles (e : Expr) : MonoM (Array Expr) := do
@@ -418,9 +376,6 @@ def monomorphizeTactic (goal : MVarId) (ids : Array Syntax) (config : MonoConfig
 
   -- First pass: collect `candidateInsts` and ignore the transformation result.
   let _ ← transformMVar goal fun e => do
-    if (← get).affix ≥ .types then
-      let types ← collectClosedTypes e
-      modify fun s => { s with candidateInsts := s.candidateInsts.insertMany types }
     Meta.transform e (pre := monoTransformStep)
 
   -- Process premises by creating all monomorphized versions.
