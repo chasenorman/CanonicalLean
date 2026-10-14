@@ -17,11 +17,16 @@ package Canonical where
   buildArchive := buildArchive ++ ".tar.gz"
 
 target canonical pkg : Dynlib := do
-  let libPath := pkg.sharedLibDir / nameToSharedLib "canonical_lean"
-  let lib := { path := libPath, name := "canonical_lean" }
-  if !(← libPath.pathExists) then
-    (← pkg.gitHubRelease.fetch).mapM (fun _ => do pure lib)
-  else return Job.pure lib
+  let name := nameToSharedLib "canonical_lean"
+  let libPath := pkg.sharedLibDir / name
+  let job ← if ← libPath.pathExists then pure (Job.pure ()) else pkg.gitHubRelease.fetch
+  job.mapM fun _ => do
+    if System.Platform.isWindows then
+      let dest := pkg.binDir / name
+      unless ← dest.pathExists do
+        IO.FS.createDirAll pkg.binDir
+        IO.FS.hardLink libPath dest
+    return { path := libPath, name := "canonical_lean" }
 
 @[default_target]
 lean_lib Canonical where
@@ -30,3 +35,8 @@ lean_lib Canonical where
 
 @[test_driver]
 lean_lib Test
+
+lean_exe check where
+  root := `Check
+  supportInterpreter := true
+  moreLinkLibs := #[canonical]
