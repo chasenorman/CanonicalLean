@@ -21,8 +21,6 @@ inductive Affix where
       Operations without instance arguments get symbols too, and premise copies are also unified
       with the types in the goal. -/
   | types
-  /-- Also every argument the type of the symbol depends on: `Fin (n+1)` is fixed whole, and so is
-      `n` in `Fin.ofNat' n`. Symbols then have simple types. -/
   | typeParameters
   deriving Ord
 
@@ -35,6 +33,8 @@ structure MonoState where
   /-- Types of instances relevant to the problem. For `affix ≥ types`, also the closed types in the
       goal and hypotheses, including the types of their closed subterms. -/
   candidateInsts: HashSet Expr := .emptyWithCapacity 8
+  /-- Type arguments relevant to the problem, for `affix ≥ types`. -/
+  candidateTypes: HashSet Expr := .emptyWithCapacity 8
   /-- How much of an occurrence a symbol fixes. -/
   affix: Affix := .insts
   /-- FVars that are safe to be used in the definition of monomorphizations. -/
@@ -122,11 +122,12 @@ def onlyHasGlobalFVars (e : Expr) : MonoM Bool := do
   let p := fun x => !globalFVars.contains x
   return !e.hasAnyFVar p
 
-/-- Add a typeclass instance to `candidateInsts`. -/
-partial def addAsCandidate (inst : Expr) : MonoM Unit := do
-  if ← onlyHasGlobalFVars inst then
-    let ⟨_, _, type⟩ ← abstractMVars (← inferType inst) (levels := false)
-    modify fun inst => { inst with candidateInsts := inst.candidateInsts.insert type }
+/-- Add a typeclass instance to `candidateInsts`, or a type to `candidateTypes`. -/
+partial def addAsCandidate (e : Expr) (isType := false) : MonoM Unit := do
+  if ← onlyHasGlobalFVars e then
+    let ⟨_, _, type⟩ ← abstractMVars (← if isType then pure e else inferType e) (levels := false)
+    modify fun s => if isType then { s with candidateTypes := s.candidateTypes.insert type }
+      else { s with candidateInsts := s.candidateInsts.insert type }
 
 /-- Unfolds constants that are not global instances at the head of `e`.  -/
 partial def unfoldInstDefn (e : Expr) : MetaM Expr := do
@@ -166,24 +167,18 @@ partial def monoPattern (e : Expr) : MonoM (Option Expr) := do
     let affix := (← get).affix
     for i in [0:binders.size] do
       let type ← metas[i]!.mvarId!.getType
-      if affix matches .typeParameters && type.isType then
-        if args[i]!.hasExprMVar then return none
-        addAsCandidate args[i]!
-        let success ← isDefEqGuarded metas[i]! args[i]!
-        if !success then
-          logWarning s!"Monomorphization failure: {e}"
-          return none
-      else if binders[i]!.isInstImplicit && (← isClass? type).isSome ||
-        affix ≥ .types && type.isSort then
-        -- The instance still has a metavariable in it: nothing to specialize yet.
-        if args[i]!.hasExprMVar then return none
-        let some childPattern ← monoPattern (← unfoldInstDefn args[i]!) | return none
-        addAsCandidate childPattern
-        -- Assign `metas[i]` to the child pattern. Use `isDefEq` to create a valid term.
-        let success ← isDefEqGuarded metas[i]! childPattern
-        if !success then
-          logWarning s!"Monomorphization failure: {e}"
-          return none
+      let whole := affix matches .typeParameters && type.isType
+      let pattern := binders[i]!.isInstImplicit && (← isClass? type).isSome || affix ≥ .types && type.isSort
+      unless whole || pattern do continue
+      -- The argument still has a metavariable in it: nothing to specialize yet.
+      if args[i]!.hasExprMVar then return none
+      let some fixed ← if whole then pure (some args[i]!) else monoPattern (← unfoldInstDefn args[i]!)
+        | return none
+      addAsCandidate fixed (isType := type.isSort)
+      -- Assign `metas[i]` to `fixed`. Use `isDefEq` to create a valid term.
+      unless ← isDefEqGuarded metas[i]! fixed do
+        logWarning s!"Monomorphization failure: {e}"
+        return none
     instantiateMVars (mkAppN fn metas)
 
 /-- `isDefEq` that also assigns metavariables within proof arguments of `pattern`,
@@ -194,16 +189,18 @@ partial def isDefEqProofRelevant (pattern e : Expr) : MetaM Bool := withoutProof
     isDefEqGuarded fn e.getAppFn <&&> (pattern.getAppArgs.zip e.getAppArgs).allM fun (p, a) => isDefEqProofRelevant p a
   else isDefEqGuarded pattern e
 
-def eligibleHead (type : Expr) (affix : Affix) : MetaM Bool := do
+def eligibleHead (e type : Expr) (affix : Affix) : MetaM Bool := do
+  unless e.isApp do return false
   forallTelescopeReducing type fun xs body => do
-    return (← xs.anyM fun x => do pure (← x.fvarId!.getBinderInfo).isInstImplicit) ||
-      (affix ≥ .types && !body.isProp && (← xs.anyM fun x => do pure (← x.fvarId!.getType).isSort))
+    if ← xs.anyM fun x => do pure (← x.fvarId!.getBinderInfo).isInstImplicit then return true
+    unless affix ≥ .types && !body.isSort do return false
+    xs.anyM fun x => do pure (← x.fvarId!.getType).isSort
 
 /-- Monomorphizes the head of `e`, creating a new monomorphization metavariable if necessary. -/
 partial def monoTransformStep (e : Expr) : MonoM TransformStep := do
   withOptions (backward.isDefEq.respectTransparency.set · false) do withApp e fun fn _ => do
     if let some (fn, type, _) ← getHeadInfo fn then
-      if ← eligibleHead type (← get).affix then
+      if ← eligibleHead e type (← get).affix then
         -- Check if we can use a pre-existing monomorphization.
         let cachedSpec := (← get).mono.getD fn []
         for ⟨specmVar, specBody⟩ in cachedSpec do
@@ -264,25 +261,11 @@ partial def getInstanceTypes (e : Expr) : MetaM (HashSet Expr) := do
   | mdata _ b | lam _ _ b _ | letE _ _ _ b _ => getInstanceTypes b
   | _ => return ∅
 
-/-- A type whose head is a constant or fvar, and which is not a `Prop`. A metavariable head has
-    nothing to match on, and matching propositions would unify their operands (`a < b` with `x < y`). -/
-def isRigidType (e : Expr) : MonoM Bool := do
-  unless e.getAppFn.isConst || e.getAppFn.isFVar do return false
-  try return (← isType e) && !(← isProp e) catch _ => return false
-
-/-- The rigid types in `e` that contain metavariables, outermost first. -/
-def collectTypeHoles (e : Expr) : MonoM (Array Expr) := do
-  let acc ← IO.mkRef #[]
-  e.forEach fun t => do
-    if !t.hasLooseBVars && t.hasExprMVar then
-      if ← isRigidType t then acc.modify (·.push t)
-  acc.get
-
 /-- Find all possible ways to unify each element in `todo` with elements of `candidates`, and accumulate the result of `cb` on each. -/
-partial def unifyWithCand (todo : List Expr) (candidates : List Expr) (cb : MonoM (Option Expr)) : MonoM (List Expr) := do
+partial def unifyWithCand (todo : List (Expr × List Expr)) (cb : MonoM (Option Expr)) : MonoM (List Expr) := do
   match todo with
   | [] => return (← cb).toList
-  | type :: todo =>
+  | (type, candidates) :: todo =>
     let type ← instantiateMVars type
     -- If there is unification to be done,
     if type.hasMVar then
@@ -293,12 +276,12 @@ partial def unifyWithCand (todo : List Expr) (candidates : List Expr) (cb : Mono
           let (_, _, inst) ← lambdaMetaTelescope inst
           if ← isDefEqGuarded type inst then
             -- continue unifying the remainder of `todo`.
-            return some (← unifyWithCand todo candidates cb)
+            return some (← unifyWithCand todo cb)
           else return none
       if !branches.isEmpty then
         return branches.flatten
     -- If there is no unification, we continue anyway.
-    unifyWithCand todo candidates cb
+    unifyWithCand todo cb
 
 /-- The body of `monomorphizeConst`. -/
 def monomorphizeConstCore (name : Name) : MonoM (List Expr) := do
@@ -318,13 +301,13 @@ def monomorphizeConstCore (name : Name) : MonoM (List Expr) := do
   -- Filter for instImplicit arguments and put them into todo list.
   let instImplicitTypes ← instImplicit.mapM fun mvar => do mvar.mvarId!.getType
   let todo := (← getInstanceTypes body).insertMany instImplicitTypes.toList
-  -- For `affix ≥ types`, also unify every rigid type with holes, binder types first and then the
-  -- body, with the types in the goal. At `insts` the instances already determine what a symbol fixes.
-  let typeItems ← if (← get).affix ≥ .types then
-      ((← mvars.mapM (·.mvarId!.getType)).push body).flatMapM collectTypeHoles
+  -- For `affix ≥ types`, also unify the type parameters with the candidate types.
+  let typeParams ← if (← get).affix ≥ .types then
+      mvars.filterM fun m => do pure (← m.mvarId!.getType).isSort
     else pure #[]
+  let (insts, types) := ((← get).candidateInsts.toList, (← get).candidateTypes.toList)
   withOptions (backward.isDefEq.respectTransparency.set · false) do
-  unifyWithCand (todo.toList ++ typeItems.toList) (← get).candidateInsts.toList do
+  unifyWithCand (todo.toList.map (·, insts) ++ typeParams.toList.map (·, types)) do
     for mvar in instImplicit do
       let mty ← instantiateMVars (← mvar.mvarId!.getType)
       match ← trySynthInstance mty with
