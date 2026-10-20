@@ -19,7 +19,8 @@ package Canonical where
 target canonical pkg : Dynlib := do
   let name := nameToSharedLib "canonical_lean"
   let libPath := pkg.sharedLibDir / name
-  let job ← if ← libPath.pathExists then
+  let dest := if System.Platform.isWindows then pkg.binDir / name else libPath
+  let job ← if ← dest.pathExists then
     pure (Job.pure ())
   else if let some _ ← (GitRepo.mk pkg.dir).findTag? then
     pkg.gitHubRelease.fetch
@@ -32,11 +33,9 @@ target canonical pkg : Dynlib := do
     pure (Job.pure ())
   job.mapM fun _ => do
     if System.Platform.isWindows then
-      let dest := pkg.binDir / name
-      unless ← dest.pathExists do
-        IO.FS.createDirAll pkg.binDir
-        IO.FS.hardLink libPath dest
-    return { path := libPath, name := "canonical_lean" }
+      IO.FS.createDirAll pkg.binDir
+      if ← libPath.pathExists then IO.FS.rename libPath dest
+    return { path := dest, name := "canonical_lean" }
 
 @[default_target]
 lean_lib Canonical where
