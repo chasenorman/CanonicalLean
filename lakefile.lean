@@ -20,21 +20,11 @@ target canonical pkg : Dynlib := do
   let name := nameToSharedLib "canonical_lean"
   let libPath := pkg.sharedLibDir / name
   let dest := if System.Platform.isWindows then pkg.binDir / name else libPath
-  let job ← if ← dest.pathExists then
-    pure (Job.pure ())
-  else if let some _ ← (GitRepo.mk pkg.dir).findTag? then
-    pkg.gitHubRelease.fetch
-  else do
-    let toolchain := (← IO.FS.readFile (pkg.dir / "lean-toolchain")).trimAscii.copy
-    let tag := toolchain.splitOn ":" |>.getLast!
-    let repo := pkg.releaseRepo?.getD "https://github.com/chasenorman/CanonicalLean"
-    download s!"{repo}/releases/download/{tag}/{pkg.buildArchive}" pkg.buildArchiveFile
-    untar pkg.buildArchiveFile pkg.buildDir
-    pure (Job.pure ())
+  let job ← if ← dest.pathExists then pure (Job.pure ()) else pkg.gitHubRelease.fetch
   job.mapM fun _ => do
-    if System.Platform.isWindows then
+    if System.Platform.isWindows && (← libPath.pathExists) then
       IO.FS.createDirAll pkg.binDir
-      if ← libPath.pathExists then IO.FS.rename libPath dest
+      IO.FS.rename libPath dest
     return { path := dest, name := "canonical_lean" }
 
 @[default_target]
