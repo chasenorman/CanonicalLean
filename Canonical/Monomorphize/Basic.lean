@@ -69,13 +69,6 @@ def addConstants (names : NameSet) : MonoM Unit := do
 def getConstants : MonoM NameSet := do
   return (← get).constNames
 
-/-- If `id` is instImplicit, add its type to `candidateInsts`. -/
-def addFVarAsCandidate (id : FVarId) : MonoM Unit := do
-  assert! (← id.getBinderInfo).isInstImplicit
-  if (← get).globalFVars.contains id then
-    let type ← id.getType
-    modify fun s => { s with candidateInsts := s.candidateInsts.insert type }
-
 /-- Set `hasNewConst` to `false` and return the previous value. -/
 def consumeNewConstFlag : MonoM Bool := do
   let s ← get
@@ -122,12 +115,31 @@ def onlyHasGlobalFVars (e : Expr) : MonoM Bool := do
   let p := fun x => !globalFVars.contains x
   return !e.hasAnyFVar p
 
+/-- The type of the instance `inst` and the types of its parent-class instance. -/
+partial def instanceTypes (inst : Expr) (acc : Array Expr := #[]) : MetaM (Array Expr) := do
+  let type ← inferType inst
+  if acc.contains type then return acc
+  let acc := acc.push type
+  let .const c us := type.getAppFn | return acc
+  let env ← getEnv
+  unless isStructure env c do return acc
+  (getStructureParentInfo env c).foldlM (init := acc) fun acc p => do
+    unless isClass env p.structName do return acc
+    instanceTypes (mkAppN (.const p.projFn us) (type.getAppArgs.push inst)) acc
+
 /-- Add a typeclass instance to `candidateInsts`, or a type to `candidateTypes`. -/
 partial def addAsCandidate (e : Expr) (isType := false) : MonoM Unit := do
   if ← onlyHasGlobalFVars e then
-    let ⟨_, _, type⟩ ← abstractMVars (← if isType then pure e else inferType e) (levels := false)
-    modify fun s => if isType then { s with candidateTypes := s.candidateTypes.insert type }
-      else { s with candidateInsts := s.candidateInsts.insert type }
+    let types ← if isType then pure #[e] else instanceTypes e
+    for type in types do
+      let ⟨_, _, type⟩ ← abstractMVars type (levels := false)
+      modify fun s => if isType then { s with candidateTypes := s.candidateTypes.insert type }
+        else { s with candidateInsts := s.candidateInsts.insert type }
+
+/-- If `id` is instImplicit, add its type to `candidateInsts`. -/
+def addFVarAsCandidate (id : FVarId) : MonoM Unit := do
+  assert! (← id.getBinderInfo).isInstImplicit
+  addAsCandidate (.fvar id)
 
 /-- Unfolds constants that are not global instances at the head of `e`.  -/
 partial def unfoldInstDefn (e : Expr) : MetaM Expr := do
