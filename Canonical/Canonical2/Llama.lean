@@ -20,8 +20,9 @@ def daemonPort : Nat := 8765
 def premisePort : Nat := 8766
 
 private def llamaCppRepo : String := "FrederickPu/llama.cpp"
-private def llamaCppTag : String := "premise-v12"
-def premiseCache : String := "chasenorman/mathlib-cache"
+private def llamaCppTag : String := "premise-v14"
+def premiseCache : String := "chasenorman/premise-cache"
+def premiseSelectorRepo : String := "chasenorman/premise-selector-v4.35.0"
 
 private def runCommand (cmd : String) (args : Array String) : IO String := do
   let out ← IO.Process.output { cmd, args }
@@ -197,19 +198,19 @@ private def ensureCache (db : FilePath) : IO Unit := do
     let marker : FilePath := ⟨db.toString ++ ".version"⟩
     let installed ← try pure (← IO.FS.readFile marker).trimAscii.toString catch _ => pure ""
     if installed == cacheRelease && (← db.pathExists) then return
-    if ← downloadCache log db "premise.db" then IO.FS.writeFile marker s!"{cacheRelease}\n"
+    if ← downloadCache log db "mathlib.db" then IO.FS.writeFile marker s!"{cacheRelease}\n"
   if !(← db.pathExists) then
     let _ ← downloadCache log db "lean.db"
 
 def premiseDb : IO FilePath := return (← libDir) / "premise.db"
 
-def premiseModel : IO FilePath := return (← libDir) / "thomas-zhu-lean-premise.f16.gguf"
+def premiseModel : IO FilePath := return (← libDir) / "premise-selector-v4.35.0.gguf"
 
 def startPremiseDaemon (prebuilt := true) : IO Unit := do
   let db ← premiseDb
   let model ← premiseModel
   if prebuilt then ensureCache log db
-  ensureModelFile log "chasenorman/lean-premise-distilroberta-GGUF" model
+  ensureModelFile log premiseSelectorRepo model
   if ← isPortHealthy premisePort then return
   let args := #["--premise", "-m", model.toString,
     "--host", daemonHost, "--port", toString premisePort, "--pooling", "mean",
