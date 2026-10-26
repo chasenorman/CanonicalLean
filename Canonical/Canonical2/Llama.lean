@@ -30,13 +30,6 @@ private def runCommand (cmd : String) (args : Array String) : IO String := do
     throw <| IO.userError s!"`{cmd}` failed ({out.exitCode}):\n{out.stderr}"
   return out.stdout
 
-private partial def findFileNamed (root : FilePath) (name : String) : IO (Option FilePath) := do
-  for entry in ← root.readDir do
-    if entry.fileName == name then return some entry.path
-    if ← entry.path.isDir then
-      if let some path ← findFileNamed entry.path name then return some path
-  return none
-
 private def platformSuffix : String :=
   if System.Platform.isWindows then
     if System.Platform.target.startsWith "aarch64" then "bin-win-cpu-arm64.zip"
@@ -93,7 +86,7 @@ private def unpack (archive root : FilePath) : IO Unit := do
     let tar := System.FilePath.mk sysRoot / "System32" / "tar.exe"
     let _ ← runCommand tar.toString #["-xf", archive.toString, "-C", root.toString]
   else
-    let _ ← runCommand "tar" #["-xf", archive.toString, "-C", root.toString]
+    let _ ← runCommand "tar" #["-xf", archive.toString, "-C", root.toString, "--strip-components=1"]
 
 private def libDir : IO FilePath := do
   let dir := (← IO.currentDir) / ".lake" / "build" / "lib"
@@ -101,18 +94,17 @@ private def libDir : IO FilePath := do
   return dir
 
 private def ensureLlama : IO FilePath := do
-  let root := (← libDir) / "llama.cpp" / llamaCppTag
-  let exeName := if System.Platform.isWindows then "llama-server.exe" else "llama-server"
-  if ← root.pathExists then
-    if let some exe ← findFileNamed root exeName then return exe
+  let root := (← libDir) / "llama.cpp"
+  let exe := root / if System.Platform.isWindows then "llama-server.exe" else "llama-server"
+  if ← exe.pathExists then return exe
   let fileName := s!"llama-{llamaCppTag}-{platformSuffix}"
   let archive := root / fileName
   downloadWithProgress log s!"https://github.com/{llamaCppRepo}/releases/download/{llamaCppTag}/{fileName}"
     archive
   unpack archive root
   IO.FS.removeFile archive
-  let some exe ← findFileNamed root exeName |
-    throw <| IO.userError s!"{fileName} did not contain {exeName}"
+  unless ← exe.pathExists do
+    throw <| IO.userError s!"{fileName} did not contain {exe.fileName.getD ""}"
   return exe
 
 private def ensureModelFile (repo : String) (dest : FilePath) : IO Unit := do
