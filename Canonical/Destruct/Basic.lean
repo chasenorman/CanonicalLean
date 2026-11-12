@@ -161,6 +161,7 @@ def destructCanonical (goal : MVarId) (names : Array Name) : MetaM (MVarId × (E
     let next := (← goal.apply (Canonical.apply dneg [typ]))[0]!
     let context ← Context.populate (names.filter (!isClass env ·))
     let destruct ← destructTactic next context
+    if !destruct.2 then return (goal, pure)
     let result := destruct.1[0]!
     let ⟨_, _, assignment⟩ := ← abstractMVars
       (← instantiateMVars (← getExprMVarAssignment? goal).get!)

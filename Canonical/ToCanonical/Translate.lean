@@ -144,7 +144,7 @@ mutual
     if ← isMatcher name then
       let eqns ← Match.getEquationsFor name
       return ← eqns.eqnNames.mapM fun eqn => do
-        pure (← toRule #[eqn.toString] (← getConstInfo eqn).type).get!
+        pure (← toRule #[] (← getConstInfo eqn).type).get!
     if let some eqns ← getEqnsFor? name then
       return ← eqns.mapM fun eqn => do
         pure (← toRule #[eqn.toString] (← getConstInfo eqn).type).get!
@@ -155,6 +155,11 @@ mutual
         let type ← inferType r.rhs
         let term ← toTerm r.rhs type (← typeArity type).params.toList
         pure (recRule name info r.ctor (← getConstInfoCtor r.ctor) term)
+    | .quotInfo info =>
+      if info.kind matches .type | .ctor then
+        return #[]
+      let _ ← withReader ({ · with noTypes := true }) do defineConst ``Quot.mk
+      return #[quotRule name (info.kind matches .lift)]
     | .defnInfo info =>
       let includeType := !isAuxRecursor (← getEnv) name || (← isRecursive info.value)
       if !includeType then
@@ -196,6 +201,8 @@ mutual
             let _ ← defineConst field.projFn
         else
           let _ ← defineConst (mkRecName name)
+    else if let .quotInfo { kind := .type, .. } ← getConstInfo name then
+      let _ ← defineConst ``Quot.mk
 
   /-- `define` call specialized with `onDefineConst` and `onTypeConst` -/
   partial def defineConst (name : Name) : ToCanonicalM Arity := withIncRecDepth do
@@ -215,7 +222,7 @@ mutual
               return (← whnf (mkAppN lhs txs), ← whnf (mkAppN rhs txs))
             let lhs ← toSpine lhs (synthInst := false)
             if returnInvalid || (← validSimpLemma (xs ++ txs) lhs) then
-              return some ⟨lhs, ← toSpine rhs, attribution, true⟩
+              return some ⟨lhs, ← toSpine rhs, attribution, true, !(← isType rhs)⟩
             else return none
 
 end
