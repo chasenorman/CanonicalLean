@@ -61,8 +61,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p .lake/build/lib
-          curl -L -o .lake/build/lib/${{ matrix.filename }} \
-            https://github.com/chasenorman/Canonical/releases/download/${{ github.event.inputs.rust }}/${{ matrix.filename }}
+          curl -fL -o .lake/build/lib/${{ matrix.filename }} \
+            https://github.com/${{ github.repository_owner }}/Canonical/releases/download/${{ github.event.inputs.rust }}/${{ matrix.filename }}
 
       - uses: leanprover/lean-action@v1
         with:
