@@ -50,6 +50,11 @@ jobs:
         include:
           - os: ubuntu-latest
             filename: libcanonical_lean.so
+          # Same file name as the x86 library, so the Rust release publishes
+          # it under a separate asset name.
+          - os: ubuntu-24.04-arm
+            filename: libcanonical_lean.so
+            asset: libcanonical_lean_aarch64.so
           - os: macos-latest
             filename: libcanonical_lean.dylib
           - os: windows-latest
@@ -62,7 +67,7 @@ jobs:
         run: |
           mkdir -p .lake/build/lib
           curl -fL -o .lake/build/lib/${{ matrix.filename }} \
-            https://github.com/${{ github.repository_owner }}/Canonical/releases/download/${{ github.event.inputs.rust }}/${{ matrix.filename }}
+            https://github.com/${{ github.repository_owner }}/Canonical/releases/download/${{ github.event.inputs.rust }}/${{ matrix.asset || matrix.filename }}
 
       - uses: leanprover/lean-action@v1
         with:
