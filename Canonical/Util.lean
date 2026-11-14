@@ -11,7 +11,7 @@ namespace Canonical
 public section
 
 def UNFOLD_HARD_CODE : NameSet := .ofList [
-  `instLENat, `Set.instMembership, `Set.Mem, `setOf, `Set.ofPred,
+  ``instLENat, `Set.instMembership, `Set.Mem, `setOf, `Set.ofPred,
   `Set.instUnion, `Set.union, `Set.instInter, `Set.inter, `Set.diff,
   `Set.singleton, `Set.powerset, `Set.Subset, `Set.instLE
 ]
@@ -164,7 +164,7 @@ def SIMP_HARD_CODE : HashMap Name (Array Name) := .ofList [
   (`Nat.succ_eq_add_one, #[]),
   (`Nat.add_zero, #[``Nat.add_zero, ``Nat.add_succ, ``Nat.succ_add, ``Nat.add_assoc]),
   (`Nat.mul_one, #[``Nat.mul_succ]),
-  (`Nat.one_mul, #[``Nat.succ_mul, ``Nat.mul_assoc]),
+  (`Nat.one_mul, #[``Nat.succ_mul, ``Nat.mul_assoc, ``Nat.mul_add, ``Nat.add_mul]),
   (`Nat.one_pow, #[``Nat.pow_succ, ``Nat.pow_add, ``Nat.mul_pow]),
   (`Nat.pow_one, #[]),
   (`Int.ofNat_eq_natCast, #[])

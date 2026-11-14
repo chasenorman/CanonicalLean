@@ -15,10 +15,10 @@ public section
 
 /-- Attempt to include a premise of type `type` as a reduction rule, instead of a definiton.
     Returns `true` if successful. Otherwise, the symbols defined by the attempt are discarded. -/
-def registerSimpPremise (attribution : String) (type : Lean.Expr) (simpOnly : Bool) : ToCanonicalM Bool := do
-  if (← read).config.simp then
+def registerSimpPremise (const : Name) (type : Lean.Expr) (simpOnly : Bool) : ToCanonicalM Bool := do
+  if (← read).config.simp || (← isRflTheorem const) then
     let (state, monoState) := (← get, ← getThe MonoState)
-    if let some rule ← toRule #[attribution] type false then
+    if let some rule ← toRule #[const.toString] type false then
       if (!simpOnly || state.definitions.contains rule.lhs.head) && (← addConstraints #[rule]) then
         addEquations rule.lhs.head #[rule]
         return true
@@ -32,7 +32,7 @@ def definePremise (const : Name) (simpOnly : Bool := false) :
   let (modified1, monomorphized) ← monomorphizePremise const
   let mut destructedPremises := #[]
   for (expr, type, name) in monomorphized do
-    if !(← registerSimpPremise const.toString type simpOnly) && !simpOnly then
+    if !(← registerSimpPremise const type simpOnly) && !simpOnly then
       let (bij?, destructed) ← destructPremise const expr type name simpOnly
       if let some (pack, metas) := bij? then
         destructedPremises := destructedPremises.push (expr, pack, metas)
@@ -67,8 +67,7 @@ def toCanonical_ (name : String) (goal : Lean.Expr) (premises : Array Name) : To
       let _ ← definePremise premise
 
   -- Simp Lemmas
-  if (← read).config.simp then
-    let _ ← addSimpLemmas
+  let _ ← addSimpLemmas
 
   let lets := lets ++ (← get).definitions.toList.toArray.map fun ⟨name, defn⟩ =>
     { name, equations := defn.equations, type := defn.type.toOption }

@@ -15,16 +15,15 @@ open Lean Std Meta Syntax
 /-- When translating from Canonical, we associate names in the `Expr` with corresponding Lean `FVarId`s -/
 abbrev FromCanonicalM := StateT (HashMap String FVarId) MetaM
 
-/-- Converts instances of `Pi.mk` and `Pi.f` at the head into λ-expressions and applications, respectively. -/
+/-- Converts `Pi.f` at the head into an application. -/
 partial def removePi (t : Canonical.Expr) : Canonical.Expr :=
-  if t.spine.head == (``Pi.mk).toString then
-    let body := t.spine.args[2]!
-    removePi { params := t.params ++ body.params, lets := t.lets ++ body.lets, spine := body.spine }
-  else if t.spine.head == (``Pi.f).toString then
+  if t.spine.head == (``Pi.f).toString then
     let fn := t.spine.args[2]!
-    let arg := t.spine.args[3]!
-    removePi { params := t.params ++ fn.params, lets := t.lets ++ fn.lets,
-               spine := { fn.spine with args := fn.spine.args.push arg } }
+    removePi { t with
+      params := t.params ++ fn.params, lets := t.lets ++ fn.lets
+      spine := { fn.spine with
+        args := fn.spine.args ++ t.spine.args[3:]
+        premiseRules := fn.spine.premiseRules ++ t.spine.premiseRules } }
   else t
 
 /-- Syntax for `simp` and `simpa` calls generated given the `premiseRules` and `goalRules` attribution. -/
@@ -73,6 +72,8 @@ mutual
       let spine ← if t.spine.head == "<synthInstance>" then do
         if let .some result ← withoutArityUnfold do trySynthInstance body then pure result
           else pure (← mkFreshExprMVar none)
+      else if t.spine.head == (``Pi.mk).toString then
+        fromTerm t.spine.args[2]! body
       else fromSpine t.spine
 
       let premiseRules := if ← t.spine.premiseRules.allM (fun s => do isRflTheorem s.toName) then #[] else t.spine.premiseRules

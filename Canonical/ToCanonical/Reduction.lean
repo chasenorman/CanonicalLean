@@ -42,7 +42,7 @@ def projRule (projection : String) (projInfo : ProjectionFunctionInfo) (construc
   let ctorArgs : Array Canonical.Expr := (Array.replicate (constructorVal.numParams + constructorVal.numFields) wildcard).set! (constructorVal.numParams + projInfo.i) { spine := { head := "field" } }
   let fieldArgs : Array Canonical.Expr := Array.ofFn (fun (i : Fin (arity - projInfo.numParams - 1)) => { spine := { head := "arg" ++ toString i.val } })
   let args : Array Canonical.Expr := ((Array.replicate projInfo.numParams wildcard).push { spine := { head := constructor, args := ctorArgs } }) ++ fieldArgs
-  ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, #[], true⟩
+  ⟨{ head := projection, args := args }, { head := "field", args := fieldArgs }, #[], true, true⟩
 
 /-- Rule corresponding to ι-reduction -/
 def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (constructorVal : ConstructorVal) (rhs : Canonical.Expr) : Rule :=
@@ -52,11 +52,18 @@ def recRule (recursor : Name) (recVal : RecursorVal) (constructor : Name) (const
   let major : Spine := { head := constructor.toString, args := Array.replicate constructorVal.numParams wildcard ++ ctorArgs}
   let args : Array Canonical.Expr := (args ++ Array.replicate recVal.numIndices wildcard).push { spine := major }
   let args := args ++ (rhs.params.toSubarray (ctorStart + constructorVal.numFields)).toArray.map Decl.toExpr
-  ⟨{head := recursor.toString, args := args }, rhs.spine, #[], true⟩
+  ⟨{head := recursor.toString, args := args }, rhs.spine, #[], true, true⟩
+
+/-- Rule corresponding to quotient reduction:
+    `Quot.lift f h (Quot.mk r a) ↦ f a` (`lift`) and `Quot.ind f (Quot.mk r a) ↦ f a` (`!lift`). -/
+def quotRule (name : Name) (lift : Bool) : Rule :=
+  let major : Canonical.Expr := { spine := { head := (``Quot.mk).toString, args := #[wildcard, wildcard, { spine := { head := "elem" } }] } }
+  let args := #[wildcard, wildcard, wildcard, { spine := { head := "fn" } }] ++ (if lift then #[wildcard] else #[]) |>.push major
+  ⟨{ head := name.toString, args }, { head := "fn", args := #[{ spine := { head := "elem" } }] }, #[], true, true⟩
 
 /-- Rule corresponding to δ-reduction. -/
 def defRule (name : String) (defn : Canonical.Expr) : Rule :=
-  ⟨{ head := name, args := defn.params.map Decl.toExpr }, defn.spine, #[], false⟩
+  ⟨{ head := name, args := defn.params.map Decl.toExpr }, defn.spine, #[], false, true⟩
 
 /-- Rules for the equality of distinct constructors to reduce to `False`. -/
 def reduceCtorEqRules (ind : Name) (info : InductiveVal) : MetaM (Array Rule) := do
@@ -72,5 +79,5 @@ def reduceCtorEqRules (ind : Name) (info : InductiveVal) : MetaM (Array Rule) :=
           { spine := { head := ind.toString, args := Array.replicate (info.numParams + info.numIndices) wildcard } },
           { spine := { head := ctor1.toString, args := args1 } },
           { spine := { head := ctor2.toString, args := args2 } }
-        ] }, { head := "False" }, #["reduceCtorEq"], true⟩
+        ] }, { head := "False" }, #["reduceCtorEq"], true, false⟩
   pure rules

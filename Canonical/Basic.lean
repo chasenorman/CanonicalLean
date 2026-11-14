@@ -48,6 +48,7 @@ mutual
     rhs: Spine
     attribution: Array String := #[]
     isRedex: Bool := true
+    speculative: Bool := true
   deriving Inhabited, Repr
 end
 
