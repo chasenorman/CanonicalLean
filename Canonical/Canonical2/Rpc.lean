@@ -1,16 +1,10 @@
 module
 
-public meta import Lean.Meta.Tactic.TryThis
-public import Lean.Meta.Basic
-public import Lean.Server.Requests
-public import Lean.Server.Rpc.RequestHandling
 public meta import Canonical.Canonical2.Util
 public meta import Canonical.Symbols
 public meta import Canonical.Util
-public meta import Std.Sync.Channel
-import Canonical.Canonical2.Basic
 
-open Lean Meta Expr Elab Term Server Tactic Core RequestM IO
+open Lean Meta Expr Elab Term Server Core RequestM
 
 namespace Canonical2
 
@@ -21,13 +15,8 @@ instance : TypeName Core.State := unsafe (.mk _ ``Core.State)
 instance : TypeName Meta.Context := unsafe (.mk _ ``Meta.Context)
 instance : TypeName Meta.State := unsafe (.mk _ ``Meta.State)
 instance : TypeName Expr := unsafe (.mk _ ``Expr)
-instance : TypeName MessageData := unsafe (.mk _ ``MessageData)
 abbrev MetaTaskUnit := MetaTask Unit
 instance : TypeName MetaTaskUnit := unsafe (.mk _ ``MetaTaskUnit)
-abbrev Pipe := Std.Channel.Sync Json
-instance : TypeName Pipe := unsafe (.mk _ ``Pipe)
-
-deriving instance RpcEncodable for PUnit
 
 structure CoreMetaState where
   sCore : WithRpcRef Core.State
@@ -84,9 +73,3 @@ def leanStringRpc : WithMeta ToLeanString → RequestM (RequestTask String) := a
 @[server_rpc_method]
 def cancel (task : WithRpcRef MetaTaskUnit) : RequestM (RequestTask Unit) :=
   asTask task.val.cancel
-
-def Pipe.log (pipe : Pipe) (key value : String) : IO Unit :=
-  pipe.send (Json.mkObj [(key, Json.str value)])
-
-@[server_rpc_method]
-def recv (pipe : WithRpcRef Pipe) : RequestM (RequestTask Json) := asTask pipe.val.recv

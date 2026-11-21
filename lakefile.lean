@@ -1,6 +1,8 @@
 import Lake
 open Lake DSL
 
+require "chasenorman" / "PremiseSelection"
+
 /-- Mirrors the releases of Lean -/
 def buildArchive :=
   if System.Platform.isWindows then "windows"

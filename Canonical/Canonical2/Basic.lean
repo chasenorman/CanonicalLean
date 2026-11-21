@@ -1,12 +1,9 @@
 module
 
-public import Lean.Expr
-public import Lean.Meta.Basic
 public import Canonical.Canonical2.Util
 import Lean.Elab.Tactic.Grind.Param
 import Canonical.Symbols
 import Canonical.ToCanonical.Main
-import Canonical.Basic
 import Canonical.FromCanonical
 import Canonical.Main
 

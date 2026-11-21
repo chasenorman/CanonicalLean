@@ -1,12 +1,13 @@
 module
 
+public meta import Canonical.Canonical2.Basic
 public meta import Canonical.Canonical2.Rpc
 public meta import Canonical.Canonical2.LLM
-public meta import Canonical.Canonical2.Llama
+public meta import PremiseSelection.Llama
 public import Canonical.Canonical2.Basic
-public import Canonical.Canonical2.PremiseSelection
+public import PremiseSelection.Basic
 
-open Lean Meta Expr Elab Term Server Tactic Core RequestM IO LibrarySuggestions
+open Lean Meta Elab Server Tactic RequestM
 
 public meta section
 
@@ -181,6 +182,21 @@ def nextGoal : WithMeta (WithRpcRef Expr) → RequestM (RequestTask (Option Next
   let mdc := MessageDataContext.mk (← getEnv) (← getMCtx) (← getLCtx) (← getOptions)
   return some { mvar := currGoal, goal := ← WithRpcRef.mk (MessageData.withContext mdc (MessageData.ofGoal currGoal)) }
 
+def daemonPort : Nat := 8765
+
+def startSubgoalDaemon (log : String → String → IO Unit) : IO Unit := do
+  if ← isPortHealthy daemonPort then return
+  let model := (← cacheDir) / "awhecmu" / "canonical-drafter-ei2m-drafter-GGUF" /
+    "ei2m-drafter-Q5_K_M.gguf"
+  ensureModelFile log "awhecmu/canonical-drafter-ei2m-drafter-GGUF" model
+  spawnDaemon log #["-m", model.toString, "--host", daemonHost,
+    "--port", toString daemonPort,
+    "--n-gpu-layers", "-1", "--mlock", "--ctx-size", "8192",
+    -- The SFT drafter is non-thinking; disable reasoning at the server level too,
+    -- since the model may still open a think block after a tool-error turn.
+    "--reasoning-budget", "0",
+    "--parallel", "1", "--cache-ram", "0", "--sleep-idle-seconds", "1800"] daemonPort
+
 @[server_rpc_method]
 def step : WithMeta ToStep → RequestM (RequestTask (WithRpcRef MetaTaskUnit)) :=
     asMetaTask fun params => do
@@ -194,7 +210,7 @@ def step : WithMeta ToStep → RequestM (RequestTask (WithRpcRef MetaTaskUnit)) 
       startSubgoalDaemon log
       pure (.Llama s!"http://{daemonHost}:{daemonPort}/chat/completions")
   log "print" "Selecting premises…"
-  let premises ← select log params.mvar { maxSuggestions := 64 } -- TODO uncancelable
+  let premises ← PremiseSelection.select log params.mvar { maxSuggestions := 64 } -- TODO uncancelable
   log "print" ""
   let automateTasks := (← automateTasks params.mvar (premises.map (·.name)) 10).map (·.map (fun _ => ()))
   let generateTask := (← generate log params.mvar (premises.map (·.name)) provider

@@ -1,8 +1,6 @@
 module
 
-public import Lean.Expr
-public import Lean.Meta.Basic
-public import Lean.Elab.Tactic.Basic
+public import PremiseSelection.Util
 import Lean.Meta.Tactic.TryThis
 
 open Lean Meta Expr Elab Tactic Term
@@ -10,10 +8,6 @@ open Lean Meta Expr Elab Tactic Term
 public section
 
 namespace Canonical2
-
-structure CancelableTask (α : Type) where
-  task : Task α
-  cancelPost : IO Unit := pure ()
 
 def CancelableTask.cancel {α : Type} (t : CancelableTask α) : IO Unit := do
   IO.cancel t.task
@@ -37,18 +31,12 @@ def CancelableTask.race {α} [Nonempty α] (tasks : List (CancelableTask (Except
     throw (IO.userError "All tasks failed.")
   }
 
-abbrev MetaTask α := CancelableTask (Except IO.Error (α × Core.State × Meta.State))
-
 def MetaTask.map (f : α → β) (task : MetaTask α) : MetaTask β :=
   CancelableTask.map (·.map fun (a, state) => (f a, state)) task
 
 end Canonical2
 
 namespace Lean
-
-def Meta.MetaM.toTask (x : MetaM α) (cancel : IO Unit := pure ()) : MetaM (Canonical2.MetaTask α) :=
-  fun metaCtx metaState coreCtx coreState => do
-    return ⟨← IO.asTask do MetaM.toIO x coreCtx (← coreState.get) metaCtx (← metaState.get), cancel⟩
 
 def MVarId.clone (mvarId : MVarId) : MetaM MVarId := do
   return (← mvarId.withContext do mkFreshExprMVar (← mvarId.getType)).mvarId!

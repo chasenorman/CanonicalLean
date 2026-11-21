@@ -1,9 +1,10 @@
 module
 
-public import Lean.Data.Json
+import Lean.Data.Json.FromToJson.Basic
+import Lean.Data.Json.Parser
 public import Canonical.Canonical2.Util
 
-open Lean Json
+open Lean
 
 public section
 
