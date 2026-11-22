@@ -173,6 +173,7 @@ def SIMP_HARD_CODE : HashMap Name (Array Name) := .ofList [
 /-- Retrieve the `Origin`s in `trie` consisting only of constants in `constSet`.  -/
 partial def getOrigins (constSet : NameSet) (trie : Trie SimpTheorem) : Array Origin :=
   match trie with
+  | chain key child => getOrigins constSet (.node #[] #[(key, child)])
   | node vs children =>
     let filtered := children.filter fun child =>
       match child.1 with

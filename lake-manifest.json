@@ -5,7 +5,7 @@
    "type": "git",
    "subDir": null,
    "scope": "chasenorman",
-   "rev": "f7e4584ddf3fce0ed1cfaa73340ad24eb303ca75",
+   "rev": "3dc6a0f8634259b4e3da3a7dd1549b4e222b7a36",
    "name": "PremiseSelection",
    "manifestFile": "lake-manifest.json",
    "inputRev": "master",
